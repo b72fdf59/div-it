@@ -1,6 +1,4 @@
-const DB_NAME = "div-it";
-const STORE = "state";
-const KEY = "group";
+import { saveGroup } from "./src/storage.js";
 
 function demoState() {
   const alice = { id: crypto.randomUUID(), name: "Alice" };
@@ -21,16 +19,6 @@ function demoState() {
 
 export async function seedDemo() {
   const state = demoState();
-  const db = await new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(STORE);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-  await new Promise((resolve, reject) => {
-    const request = db.transaction(STORE, "readwrite").objectStore(STORE).put(state, KEY);
-    request.onsuccess = resolve;
-    request.onerror = () => reject(request.error);
-  });
+  await saveGroup(state);
   return state;
 }

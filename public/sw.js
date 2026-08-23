@@ -1,5 +1,5 @@
-const CACHE = "div-it-v3";
-const FILES = ["./", "./index.html", "./style.css", "./app.js", "./ledger.js", "./manifest.webmanifest"];
+const CACHE = "div-it-v4";
+const FILES = ["/"];
 self.addEventListener("install", (event) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(FILES)).then(() => self.skipWaiting())));
 self.addEventListener("activate", (event) => event.waitUntil(clients.claim()));
 self.addEventListener("fetch", (event) => {

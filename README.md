@@ -4,13 +4,22 @@ Frontend-only local expense-sharing proof. Data stays in browser IndexedDB; expo
 
 See [ROADMAP.md](./ROADMAP.md) for product decisions and implementation order.
 
-Run from this directory:
+## Structure
+
+- `src/App.svelte`: local group state and persistence actions.
+- `src/components/`: small UI pieces for group settings, people, expense entry, and ledger summary.
+- `src/ledger.js`: money validation, balance calculation, and settlement logic.
+- `src/storage.js`: IndexedDB reads and writes.
+- `public/`: PWA manifest and service worker.
+
+Install dependencies once, then run:
 
 ```sh
-python3 -m http.server 8000
+npm install
+npm run dev
 ```
 
-Open `http://localhost:8000`. Run ledger check with `node ledger.test.mjs`.
+Open URL Vite prints. Build release files with `npm run build`.
 
 For local development, seed a three-person Seoul trip in browser DevTools after opening the app:
 

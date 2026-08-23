@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { balances, settlementPlan } from "./ledger.js";
+import { balances, settlementPlan } from "./src/ledger.js";
 
 const people = [{ id: "a", name: "Alice" }, { id: "b", name: "Bob" }];
 const events = [{ type: "expense", payerId: "a", amount: 1001, splits: [{ personId: "a", amount: 501 }, { personId: "b", amount: 500 }] }];

@@ -10,7 +10,7 @@ AI is post-release work. It will propose structured expense drafts and never cha
 
 - MIT-licensed public project.
 - Static PWA first; no required hosted backend.
-- Plain HTML, CSS, and ES modules for now. Do not add React, Vite, or a framework without a demonstrated need.
+- Svelte 5 components with Vite for local development and production builds. Do not add SvelteKit, React, or another state-management library.
 - Browser data is local-first. Use one Automerge document per small group.
 - Sync relay is optional and self-hosted. It is a public-HTTPS Go service that stores encrypted payloads, not readable ledger data.
 - Membership is accountless: a device key plus secret invite link/QR. New devices are re-invited; removing a member rotates future group keys.

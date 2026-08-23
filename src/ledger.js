@@ -12,8 +12,7 @@ export function makeExpense({ description, amount, payerId, splits, createdAt = 
   if (!description.trim()) throw new Error("Enter a description.");
   if (!payerId || !splits.length) throw new Error("Choose payer and at least one participant.");
   if (!Number.isInteger(amount) || amount <= 0 || splits.some((split) => !split.personId || !Number.isInteger(split.amount) || split.amount <= 0)) throw new Error("Expense amounts must be positive whole cents.");
-  const total = splits.reduce((sum, split) => sum + split.amount, 0);
-  if (total !== amount) throw new Error("Splits must equal total amount.");
+  if (splits.reduce((sum, split) => sum + split.amount, 0) !== amount) throw new Error("Splits must equal total amount.");
   return { id: crypto.randomUUID(), type: "expense-created", description: description.trim(), amount, payerId, splits, createdAt };
 }
 
