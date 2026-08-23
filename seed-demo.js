@@ -1,4 +1,4 @@
-import { saveGroup } from "./src/storage.js";
+import { openGroup } from "./src/group.js";
 
 function demoState() {
   const alice = { id: crypto.randomUUID(), name: "Alice" };
@@ -19,6 +19,7 @@ function demoState() {
 
 export async function seedDemo() {
   const state = demoState();
-  await saveGroup(state);
+  const group = await openGroup(() => {});
+  group.replace(state);
   return state;
 }

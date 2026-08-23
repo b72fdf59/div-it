@@ -4,36 +4,38 @@
   import GroupSettings from "./components/GroupSettings.svelte";
   import LedgerSummary from "./components/LedgerSummary.svelte";
   import PeopleCard from "./components/PeopleCard.svelte";
+  import { openGroup } from "./group.js";
   import { balances, formatCents, makeExpense, settlementPlan } from "./ledger.js";
-  import { emptyGroup, loadGroup, saveGroup } from "./storage.js";
 
-  let group = $state(emptyGroup());
+  let group = $state.raw({ name: "My group", currency: "USD", people: [], events: [] });
   let ready = $state(false);
   let statusMessage = $state("");
+  let groupController;
   let balanceMap = $derived(balances(group.events, group.people));
   let transfers = $derived(settlementPlan(balanceMap));
   let money = (amount) => formatCents(amount, group.currency);
   let personName = (id) => group.people.find((person) => person.id === id)?.name || "Unknown";
 
   onMount(async () => {
-    group = await loadGroup();
-    ready = true;
+    groupController = await openGroup((nextGroup) => {
+      group = nextGroup;
+      ready = true;
+    });
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
   });
 
-  async function persist(nextGroup, message) {
-    group = nextGroup;
+  function change(mutator, message) {
     statusMessage = message;
-    await saveGroup(group);
+    groupController.change(mutator);
   }
 
   function addPerson(name) {
-    persist({ ...group, people: [...group.people, { id: crypto.randomUUID(), name }] }, `${name} added.`);
+    change((document) => document.people.push({ id: crypto.randomUUID(), name }), `${name} added.`);
   }
 
   function addExpense(input) {
     const expense = makeExpense(input);
-    persist({ ...group, events: [...group.events, expense] }, "Expense saved locally.");
+    change((document) => document.events.push(expense), "Expense saved locally.");
   }
 
   function exportBackup() {
@@ -47,7 +49,8 @@
     try {
       const imported = JSON.parse(await event.currentTarget.files[0].text());
       if (!Array.isArray(imported.people) || !Array.isArray(imported.events)) throw new Error("Not a Div It backup.");
-      await persist(imported, "Backup imported.");
+      groupController.replace(imported);
+      statusMessage = "Backup imported.";
     } catch (cause) {
       statusMessage = cause.message;
     }
@@ -57,7 +60,7 @@
 {#if ready}
   <main>
     <header><p class="eyebrow">LOCAL-FIRST EXPENSE SHARING</p><h1>Div It</h1><p id="notice" aria-live="polite">{statusMessage}</p></header>
-    <GroupSettings {group} save={(nextGroup) => persist(nextGroup, "Group saved locally.")} />
+    <GroupSettings {group} save={(nextGroup) => change((document) => { document.name = nextGroup.name; document.currency = nextGroup.currency; }, "Group saved locally.")} />
     <div class="grid">
       <PeopleCard people={group.people} {balanceMap} {money} {addPerson} />
       <ExpenseForm people={group.people} {addExpense} />

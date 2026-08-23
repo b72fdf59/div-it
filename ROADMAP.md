@@ -19,7 +19,7 @@ AI is post-release work. It will propose structured expense drafts and never cha
 
 ## Current state
 
-The prototype supports local people, equal/exact expenses, balances, settlement suggestions, IndexedDB persistence, JSON backup/import, offline assets, and a developer seed script.
+The prototype supports local people, equal/exact expenses, balances, settlement suggestions, JSON backup/import, offline assets, and a developer seed script. It now stores one Automerge group document in IndexedDB and uses BroadcastChannel for same-browser-tab sync; this still needs manual two-tab verification.
 
 It is not multi-tab live, multi-device, encrypted, or CRDT-backed yet. The current data model is temporary and exists to validate expense entry.
 

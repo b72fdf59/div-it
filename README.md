@@ -6,10 +6,11 @@ See [ROADMAP.md](./ROADMAP.md) for product decisions and implementation order.
 
 ## Structure
 
-- `src/App.svelte`: local group state and persistence actions.
+- `src/App.svelte`: local group state and CRDT actions.
 - `src/components/`: small UI pieces for group settings, people, expense entry, and ledger summary.
 - `src/ledger.js`: money validation, balance calculation, and settlement logic.
-- `src/storage.js`: IndexedDB reads and writes.
+- `src/group.js`: Automerge document, IndexedDB persistence, and same-browser-tab sync.
+- `src/legacy.js`: one-time import of data created by the pre-CRDT prototype.
 - `public/`: PWA manifest and service worker.
 
 Install dependencies once, then run:
