@@ -1,16 +1,19 @@
 # Div It roadmap
 
-## Product goal
+## First release goal
 
-Build a private, self-hostable, local-first expense-sharing PWA. People enter expenses and agree on splits; the app calculates balances and settlement suggestions. It does not move money. AI proposes structured expense drafts and never changes the ledger without human confirmation.
+Replace Splitwise for one real private group: members join without accounts, import their starting balances, enter expenses offline, sync safely across devices, and record manual settlements. The app does not move money.
+
+AI is post-release work. It will propose structured expense drafts and never change the ledger without human confirmation.
 
 ## Decisions already made
 
 - MIT-licensed public project.
 - Static PWA first; no required hosted backend.
 - Plain HTML, CSS, and ES modules for now. Do not add React, Vite, or a framework without a demonstrated need.
-- Browser data is local-first. Automerge will replace the current local state when sync work starts.
-- Sync relay is optional and self-hosted. It should store encrypted payloads, not readable ledger data.
+- Browser data is local-first. Use one Automerge document per small group.
+- Sync relay is optional and self-hosted. It is a public-HTTPS Go service that stores encrypted payloads, not readable ledger data.
+- Membership is accountless: a device key plus secret invite link/QR. New devices are re-invited; removing a member rotates future group keys.
 - Payments, including UPI, are future integrations only.
 - AI uses a user-provided API key and returns a schema-validated draft. Manual entry must always work.
 
@@ -40,18 +43,27 @@ Done when a real group can enter and verify a week of expenses without losing or
 4. Add `BroadcastChannel` adapter so two tabs of same browser update without refresh.
 5. Display domain conflicts for concurrent amount, payer, or split revisions. Do not accept automatic last-write-wins for money fields.
 
-Done when offline edits in two tabs converge and produce same balances.
+Done when two browser tabs make offline edits, reconnect, converge, and produce the same balances.
 
 ### 3. Add optional self-hosted sync relay
 
-1. Define group/device keys and invite flow before choosing transport.
-2. Build a small Go relay that authenticates group access and relays/stores encrypted CRDT updates.
-3. Package relay with Docker Compose and documented environment variables.
-4. Support reconnect, missed updates, and encrypted full backup recovery.
+1. Define group/device keys and secret-link/QR invite format.
+2. Build a small Go relay that authenticates device keys and relays/stores encrypted CRDT updates.
+3. Package relay with Docker Compose, public HTTPS deployment guide, and documented environment variables.
+4. Support reconnect, missed updates, group-key rotation, and encrypted full backup recovery.
 
-Done when two devices sync a group through a self-hosted relay and relay cannot read ledger contents.
+Done when two devices sync a group through a self-hosted relay, relay cannot read ledger contents, and removal prevents future-update access.
 
-### 4. Improve expense entry
+### 4. Reach Splitwise replacement gate
+
+1. Import current balances from a user-uploaded Splitwise CSV; do not use its API.
+2. Export readable CSV/JSON and encrypted full backup.
+3. Add visible conflict resolution for concurrent amount, payer, or split revisions.
+4. Test with one real group for two weeks: every member joins from own device, offline edits merge, and manual settlements close debts.
+
+Done when that group can stop using Splitwise without data loss or incorrect balances.
+
+### 5. Improve expense entry with AI
 
 1. Add receipt attachment storage with creator-controlled retention.
 2. Add itemized receipt claiming, then historical suggestions.
@@ -61,15 +73,13 @@ Done when two devices sync a group through a self-hosted relay and relay cannot 
 
 Done when AI saves manual work without creating unreviewed debts.
 
-### 5. Product hardening
+### 6. Product hardening
 
-1. CSV balance import from Splitwise exports.
-2. Export readable CSV/JSON and encrypted full backup.
-3. Improve accessibility, locale-aware dates/currency, and translation-ready strings.
-4. Add group roles, removal, key rotation, and audited owner actions.
-5. Add optional reminder notifications only after account/consent design exists.
+1. Improve accessibility, locale-aware dates/currency, and translation-ready strings.
+2. Add audited owner actions.
+3. Add optional reminder notifications only after account/consent design exists.
 
-### 6. Future integrations
+### 7. Future integrations
 
 1. Create payment-link abstraction with manual settlement confirmation.
 2. Research regional requirements before UPI or other payment-provider integration.
