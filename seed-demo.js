@@ -6,7 +6,7 @@ function demoState() {
   const alice = { id: crypto.randomUUID(), name: "Alice" };
   const bob = { id: crypto.randomUUID(), name: "Bob" };
   const carol = { id: crypto.randomUUID(), name: "Carol" };
-  const event = (description, amount, payerId, splits) => ({ id: crypto.randomUUID(), type: "expense", description, amount, payerId, splits, createdAt: new Date().toISOString() });
+  const event = (description, amount, payerId, splits) => ({ id: crypto.randomUUID(), type: "expense-created", description, amount, payerId, splits, createdAt: new Date().toISOString() });
   return {
     name: "Weekend in Seoul",
     currency: "USD",

@@ -11,15 +11,16 @@ export function formatCents(value, currency = "USD") {
 export function makeExpense({ description, amount, payerId, splits, createdAt = new Date().toISOString() }) {
   if (!description.trim()) throw new Error("Enter a description.");
   if (!payerId || !splits.length) throw new Error("Choose payer and at least one participant.");
+  if (!Number.isInteger(amount) || amount <= 0 || splits.some((split) => !split.personId || !Number.isInteger(split.amount) || split.amount <= 0)) throw new Error("Expense amounts must be positive whole cents.");
   const total = splits.reduce((sum, split) => sum + split.amount, 0);
   if (total !== amount) throw new Error("Splits must equal total amount.");
-  return { id: crypto.randomUUID(), type: "expense", description: description.trim(), amount, payerId, splits, createdAt };
+  return { id: crypto.randomUUID(), type: "expense-created", description: description.trim(), amount, payerId, splits, createdAt };
 }
 
 export function balances(events, people) {
   const result = Object.fromEntries(people.map((person) => [person.id, 0]));
   for (const event of events) {
-    if (event.type !== "expense") continue;
+    if (event.type !== "expense" && event.type !== "expense-created") continue;
     result[event.payerId] = (result[event.payerId] || 0) + event.amount;
     for (const split of event.splits) result[split.personId] = (result[split.personId] || 0) - split.amount;
   }
