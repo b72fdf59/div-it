@@ -1,8 +1,8 @@
 # Div It
 
-Frontend-only local expense-sharing proof. Data stays in browser IndexedDB; export a JSON backup.
+Local-first expense-sharing prototype. Data currently stays in browser IndexedDB and can be exported as a JSON backup.
 
-See [ROADMAP.md](./ROADMAP.md) for product decisions and implementation order.
+See [ROADMAP.md](./ROADMAP.md) for product decisions and implementation order, [TASKS.md](./TASKS.md) for dependency-ordered work units, and [the interactive design mock](./docs/design/calm-mobile-mock.html) for the approved visual direction.
 
 ## Structure
 
@@ -31,4 +31,4 @@ location.reload()
 
 This replaces current browser data.
 
-Next: Automerge-backed group documents and optional encrypted sync relay.
+Next: stabilize the immutable ledger event model and test boundary before hardening the existing Automerge prototype. The optional encrypted sync relay follows after local CRDT behavior is verified.
