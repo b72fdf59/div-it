@@ -1,0 +1,1246 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Div It — calm mobile concept</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #24312c;
+        background: #e8ece7;
+        --ink: #24312c;
+        --muted: #6d7771;
+        --line: #e4e7e1;
+        --paper: #faf9f5;
+        --surface: #ffffff;
+        --sage: #476b5b;
+        --sage-soft: #e6eee9;
+        --terracotta: #a95f4e;
+        --terracotta-soft: #f6e9e5;
+        --amber: #8a6a2f;
+        --amber-soft: #f5efdf;
+        --action: #24312c;
+        --action-ink: #ffffff;
+        --shadow: 0 24px 70px rgba(36, 49, 44, .18);
+      }
+
+      html[data-theme="dark"] {
+        color-scheme: dark;
+        color: #e9f1ec;
+        background: #09110e;
+        --ink: #e9f1ec;
+        --muted: #94a39a;
+        --line: #293831;
+        --paper: #0f1915;
+        --surface: #17231e;
+        --sage: #68c895;
+        --sage-soft: #183529;
+        --terracotta: #e08b78;
+        --terracotta-soft: #3d2924;
+        --amber: #d9b769;
+        --amber-soft: #332d1f;
+        --action: #68c895;
+        --action-ink: #092016;
+        --shadow: 0 28px 80px rgba(0, 0, 0, .5);
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+      }
+
+      button, input {
+        font: inherit;
+      }
+
+      button {
+        color: inherit;
+      }
+
+      .stage {
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: minmax(260px, 420px) minmax(390px, 440px);
+        justify-content: center;
+        align-items: center;
+        gap: clamp(3rem, 8vw, 8rem);
+        padding: 3rem;
+        background:
+          radial-gradient(circle at 18% 16%, rgba(255, 255, 255, .9), transparent 28rem),
+          #e8ece7;
+      }
+
+      html[data-theme="dark"] .stage {
+        background:
+          radial-gradient(circle at 18% 16%, rgba(47, 111, 80, .16), transparent 28rem),
+          #09110e;
+      }
+
+      .concept {
+        max-width: 380px;
+      }
+
+      .concept__mark {
+        width: 44px;
+        height: 44px;
+        display: grid;
+        place-items: center;
+        border-radius: 14px;
+        margin-bottom: 2rem;
+        background: var(--sage);
+        color: white;
+        font-size: 22px;
+        font-weight: 800;
+        letter-spacing: -.08em;
+      }
+
+      html[data-theme="dark"] .concept__mark {
+        background: #68c895;
+        color: #092016;
+      }
+
+      html[data-theme="dark"] .concept p:first-of-type {
+        color: #68c895;
+      }
+
+      .concept p:first-of-type {
+        margin: 0 0 .7rem;
+        color: var(--sage);
+        font-size: .75rem;
+        font-weight: 800;
+        letter-spacing: .14em;
+        text-transform: uppercase;
+      }
+
+      .concept h1 {
+        margin: 0;
+        max-width: 330px;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: clamp(2.8rem, 5vw, 4.7rem);
+        line-height: .98;
+        letter-spacing: -.045em;
+        font-weight: 500;
+      }
+
+      .concept__body {
+        margin: 1.5rem 0 0;
+        color: #5f6b65;
+        font-size: 1rem;
+        line-height: 1.7;
+      }
+
+      html[data-theme="dark"] .concept__body,
+      html[data-theme="dark"] .concept__notes {
+        color: #9caaa2;
+      }
+
+      html[data-theme="dark"] .concept__notes li::before {
+        background: #68c895;
+      }
+
+      .concept__notes {
+        display: grid;
+        gap: .7rem;
+        padding: 0;
+        margin: 2rem 0 0;
+        list-style: none;
+        color: #4f5e57;
+        font-size: .88rem;
+      }
+
+      .concept__notes li {
+        display: flex;
+        gap: .7rem;
+        align-items: center;
+      }
+
+      .concept__notes li::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        background: #86a091;
+      }
+
+      .phone {
+        position: relative;
+        width: 390px;
+        height: min(820px, calc(100vh - 4rem));
+        min-height: 680px;
+        overflow: hidden;
+        border: 8px solid #26312d;
+        border-radius: 42px;
+        background: var(--paper);
+        box-shadow: var(--shadow);
+      }
+
+      .phone::before {
+        content: "";
+        position: absolute;
+        z-index: 20;
+        top: 9px;
+        left: 50%;
+        width: 86px;
+        height: 25px;
+        border-radius: 20px;
+        background: #26312d;
+        transform: translateX(-50%);
+        pointer-events: none;
+      }
+
+      html[data-theme="dark"] .phone {
+        border-color: #26332d;
+      }
+
+      html[data-theme="dark"] .phone::before {
+        background: #26332d;
+      }
+
+      .app {
+        height: 100%;
+        overflow-y: auto;
+        scrollbar-width: none;
+        padding-bottom: 104px;
+      }
+
+      .app::-webkit-scrollbar { display: none; }
+
+      .topbar {
+        position: sticky;
+        z-index: 8;
+        top: 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 45px 20px 13px;
+        border-bottom: 1px solid rgba(228, 231, 225, .72);
+        background: rgba(250, 249, 245, .94);
+        backdrop-filter: blur(18px);
+      }
+
+      html[data-theme="dark"] .topbar {
+        background: rgba(15, 25, 21, .94);
+      }
+
+      .top-actions {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+
+      .theme-toggle {
+        width: 31px;
+        height: 31px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        padding: 0;
+        background: var(--surface);
+        color: var(--muted);
+        cursor: pointer;
+      }
+
+      .group-picker {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        border: 0;
+        padding: 0;
+        background: transparent;
+        cursor: pointer;
+      }
+
+      .group-avatar {
+        width: 38px;
+        height: 38px;
+        display: grid;
+        place-items: center;
+        border-radius: 13px;
+        background: #dce7df;
+        font-size: 18px;
+      }
+
+      .group-label {
+        display: grid;
+        gap: 1px;
+        text-align: left;
+      }
+
+      .group-label small {
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+      }
+
+      .group-label strong {
+        font-size: 15px;
+        letter-spacing: -.01em;
+      }
+
+      .chevron {
+        color: #89918d;
+        font-size: 12px;
+      }
+
+      .sync {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        border: 0;
+        border-radius: 999px;
+        padding: 7px 10px;
+        background: var(--sage-soft);
+        color: var(--sage);
+        font-size: 11px;
+        font-weight: 750;
+      }
+
+      .sync::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #4f8069;
+      }
+
+      html[data-theme="dark"] .sync {
+        color: #80d4a8;
+      }
+
+      html[data-theme="dark"] .sync::before {
+        background: #68c895;
+        box-shadow: 0 0 0 3px rgba(104, 200, 149, .1);
+      }
+
+      .view {
+        display: none;
+        padding: 20px;
+      }
+
+      .view.active {
+        display: block;
+      }
+
+      .hello {
+        margin: 4px 0 16px;
+      }
+
+      .hello small {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .hello h2 {
+        margin: 3px 0 0;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 30px;
+        line-height: 1.1;
+        font-weight: 500;
+        letter-spacing: -.025em;
+      }
+
+      .balance-card {
+        position: relative;
+        overflow: hidden;
+        padding: 21px;
+        border-radius: 22px;
+        background: var(--sage);
+        color: white;
+      }
+
+      html[data-theme="dark"] .balance-card {
+        border: 1px solid rgba(104, 200, 149, .22);
+        background: linear-gradient(145deg, #245f45, #1b4936);
+      }
+
+      .balance-card::after {
+        content: "";
+        position: absolute;
+        right: -38px;
+        bottom: -54px;
+        width: 150px;
+        height: 150px;
+        border: 28px solid rgba(255, 255, 255, .07);
+        border-radius: 50%;
+      }
+
+      .balance-card__label {
+        margin: 0 0 6px;
+        color: rgba(255, 255, 255, .72);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .balance-card__amount {
+        margin: 0;
+        font-size: 30px;
+        line-height: 1.05;
+        letter-spacing: -.035em;
+        font-weight: 750;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .balance-card__detail {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 15px;
+        color: rgba(255, 255, 255, .78);
+        font-size: 12px;
+      }
+
+      .mini-faces {
+        display: flex;
+        padding-left: 4px;
+      }
+
+      .mini-face {
+        width: 23px;
+        height: 23px;
+        display: grid;
+        place-items: center;
+        margin-left: -4px;
+        border: 2px solid var(--sage);
+        border-radius: 50%;
+        background: #d9c6ad;
+        color: #4d4337;
+        font-size: 9px;
+        font-weight: 800;
+      }
+
+      .mini-face:nth-child(2) {
+        background: #c9d4e2;
+        color: #3a4654;
+      }
+
+      .review {
+        display: flex;
+        gap: 11px;
+        align-items: center;
+        margin-top: 12px;
+        padding: 13px 14px;
+        border: 1px solid #e9dfc3;
+        border-radius: 16px;
+        background: var(--amber-soft);
+        color: #665126;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      html[data-theme="dark"] .review {
+        border-color: #554a2e;
+        color: #e4ca89;
+      }
+
+      html[data-theme="dark"] .review span span {
+        color: #bca66d;
+      }
+
+      .review__icon {
+        width: 30px;
+        height: 30px;
+        display: grid;
+        place-items: center;
+        flex: 0 0 auto;
+        border-radius: 10px;
+        background: rgba(138, 106, 47, .12);
+        font-size: 14px;
+      }
+
+      .review strong {
+        display: block;
+        font-size: 12px;
+      }
+
+      .review span {
+        display: block;
+        margin-top: 2px;
+        color: #857044;
+        font-size: 11px;
+      }
+
+      .section-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin: 25px 1px 10px;
+      }
+
+      .section-head h3 {
+        margin: 0;
+        font-size: 14px;
+        letter-spacing: -.01em;
+      }
+
+      .section-head button {
+        border: 0;
+        padding: 0;
+        background: transparent;
+        color: var(--sage);
+        font-size: 11px;
+        font-weight: 750;
+        cursor: pointer;
+      }
+
+      .activity-list,
+      .panel {
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--surface);
+      }
+
+      html[data-theme="dark"] .activity-row + .activity-row,
+      html[data-theme="dark"] .member-row + .member-row,
+      html[data-theme="dark"] .setting-row + .setting-row {
+        border-color: var(--line);
+      }
+
+      html[data-theme="dark"] .activity-icon {
+        background: #26332d;
+      }
+
+      .activity-row {
+        display: grid;
+        grid-template-columns: 40px minmax(0, 1fr) auto;
+        gap: 11px;
+        align-items: center;
+        min-height: 67px;
+        padding: 11px 13px;
+      }
+
+      .activity-row + .activity-row,
+      .member-row + .member-row,
+      .setting-row + .setting-row {
+        border-top: 1px solid #edf0eb;
+      }
+
+      .activity-icon {
+        width: 40px;
+        height: 40px;
+        display: grid;
+        place-items: center;
+        border-radius: 13px;
+        background: #f0eee7;
+        font-size: 17px;
+      }
+
+      .activity-copy {
+        min-width: 0;
+      }
+
+      .activity-copy strong,
+      .member-copy strong {
+        display: block;
+        overflow: hidden;
+        font-size: 13px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .activity-copy span,
+      .member-copy span {
+        display: block;
+        overflow: hidden;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 10.5px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .activity-money {
+        text-align: right;
+        font-size: 12px;
+        font-weight: 750;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .activity-money span {
+        display: block;
+        margin-top: 3px;
+        color: var(--sage);
+        font-size: 10px;
+        font-weight: 650;
+      }
+
+      .expense-fab {
+        position: absolute;
+        z-index: 15;
+        right: 18px;
+        bottom: 76px;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-height: 45px;
+        border: 0;
+        border-radius: 16px;
+        padding: 0 16px;
+        background: var(--action);
+        color: var(--action-ink);
+        box-shadow: 0 12px 26px rgba(36, 49, 44, .28);
+        font-size: 12px;
+        font-weight: 750;
+        cursor: pointer;
+      }
+
+      .expense-fab b {
+        font-size: 20px;
+        font-weight: 400;
+        line-height: 1;
+      }
+
+      .bottom-nav {
+        position: absolute;
+        z-index: 14;
+        right: 0;
+        bottom: 0;
+        left: 0;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        height: 70px;
+        padding: 7px 18px 9px;
+        border-top: 1px solid var(--line);
+        background: rgba(255, 255, 255, .97);
+        backdrop-filter: blur(18px);
+      }
+
+      html[data-theme="dark"] .bottom-nav {
+        background: rgba(16, 27, 22, .97);
+      }
+
+      .nav-button {
+        display: grid;
+        justify-items: center;
+        align-content: center;
+        gap: 3px;
+        border: 0;
+        background: transparent;
+        color: #89918d;
+        font-size: 9px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .nav-button svg {
+        width: 20px;
+        height: 20px;
+        stroke: currentColor;
+      }
+
+      .nav-button.active {
+        color: var(--sage);
+      }
+
+      .page-title {
+        margin: 3px 0 17px;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 29px;
+        font-weight: 500;
+        letter-spacing: -.025em;
+      }
+
+      .settlement {
+        display: grid;
+        grid-template-columns: 36px minmax(0, 1fr) auto;
+        gap: 11px;
+        align-items: center;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: white;
+      }
+
+      html[data-theme="dark"] .settlement {
+        background: var(--surface);
+      }
+
+      html[data-theme="dark"] .person-avatar,
+      html[data-theme="dark"] .member-row .person-avatar {
+        background: #293b33 !important;
+        color: #b7c9bf !important;
+      }
+
+      .settlement + .settlement { margin-top: 9px; }
+
+      .person-avatar {
+        width: 36px;
+        height: 36px;
+        display: grid;
+        place-items: center;
+        border-radius: 13px;
+        background: #e5dccf;
+        color: #62574a;
+        font-size: 11px;
+        font-weight: 800;
+      }
+
+      .settlement strong {
+        display: block;
+        font-size: 12px;
+      }
+
+      .settlement span {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .settlement button,
+      .small-action {
+        border: 0;
+        border-radius: 11px;
+        padding: 8px 10px;
+        background: var(--sage-soft);
+        color: var(--sage);
+        font-size: 10px;
+        font-weight: 800;
+        cursor: pointer;
+      }
+
+      .member-row {
+        display: grid;
+        grid-template-columns: 38px minmax(0, 1fr) auto;
+        gap: 11px;
+        align-items: center;
+        padding: 12px 14px;
+      }
+
+      .member-balance {
+        font-size: 12px;
+        font-weight: 750;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .member-balance.owed { color: var(--sage); }
+      .member-balance.owes { color: var(--terracotta); }
+
+      .setting-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        min-height: 58px;
+        padding: 12px 14px;
+      }
+
+      .setting-row strong {
+        display: block;
+        font-size: 12px;
+      }
+
+      .setting-row span {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+
+      .status-good {
+        color: var(--sage);
+        font-size: 10px;
+        font-weight: 800;
+      }
+
+      .invite-button {
+        width: 100%;
+        margin-top: 10px;
+        border: 1px solid #bed0c5;
+        border-radius: 14px;
+        padding: 11px;
+        background: var(--sage-soft);
+        color: var(--sage);
+        font-size: 11px;
+        font-weight: 800;
+        cursor: pointer;
+      }
+
+      .scrim {
+        position: absolute;
+        z-index: 30;
+        inset: 0;
+        display: none;
+        align-items: flex-end;
+        background: rgba(25, 34, 30, .4);
+        backdrop-filter: blur(2px);
+      }
+
+      .scrim.open { display: flex; }
+
+      .sheet {
+        width: 100%;
+        max-height: 91%;
+        overflow-y: auto;
+        border-radius: 28px 28px 0 0;
+        padding: 10px 20px 26px;
+        background: var(--paper);
+        animation: rise .22s ease-out;
+      }
+
+      html[data-theme="dark"] .close,
+      html[data-theme="dark"] .activity-icon {
+        background: #26332d;
+        color: #aab7af;
+      }
+
+      html[data-theme="dark"] .amount-field input {
+        border-color: #3a4a42;
+      }
+
+      html[data-theme="dark"] .text-input,
+      html[data-theme="dark"] .choice-row,
+      html[data-theme="dark"] .chip {
+        border-color: var(--line);
+        background: var(--surface);
+      }
+
+      html[data-theme="dark"] .chip.selected {
+        border-color: #39765a;
+        background: var(--sage-soft);
+        color: #82d7aa;
+      }
+
+      html[data-theme="dark"] .segmented {
+        background: #0b1410;
+      }
+
+      html[data-theme="dark"] .segmented button.active {
+        background: #293831;
+        color: #e9f1ec;
+      }
+
+      html[data-theme="dark"] .impact {
+        color: #89d8af;
+      }
+
+      @keyframes rise {
+        from { transform: translateY(30px); opacity: .7; }
+      }
+
+      .sheet__handle {
+        width: 38px;
+        height: 4px;
+        margin: 0 auto 12px;
+        border-radius: 4px;
+        background: #d4d8d2;
+      }
+
+      .sheet__head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .sheet__head h2 {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 25px;
+        font-weight: 500;
+      }
+
+      .close {
+        width: 32px;
+        height: 32px;
+        border: 0;
+        border-radius: 11px;
+        background: #eceee9;
+        color: #66716b;
+        cursor: pointer;
+      }
+
+      .amount-field {
+        display: flex;
+        justify-content: center;
+        align-items: baseline;
+        gap: 5px;
+        margin: 23px 0 16px;
+      }
+
+      .amount-field span {
+        color: var(--muted);
+        font-size: 17px;
+        font-weight: 650;
+      }
+
+      .amount-field input {
+        width: 145px;
+        border: 0;
+        border-bottom: 1px solid #cbd1ca;
+        padding: 0 0 4px;
+        outline: 0;
+        background: transparent;
+        color: var(--ink);
+        font-size: 39px;
+        font-weight: 720;
+        letter-spacing: -.04em;
+        text-align: center;
+      }
+
+      .field {
+        margin-top: 13px;
+      }
+
+      .field > label,
+      .field > span {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 750;
+      }
+
+      .text-input,
+      .choice-row {
+        width: 100%;
+        min-height: 45px;
+        border: 1px solid #dfe3dd;
+        border-radius: 14px;
+        padding: 11px 13px;
+        background: white;
+      }
+
+      .text-input {
+        outline-color: var(--sage);
+        color: var(--ink);
+      }
+
+      .choice-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .chips {
+        display: flex;
+        gap: 7px;
+        overflow-x: auto;
+        padding-bottom: 2px;
+      }
+
+      .chip {
+        flex: 0 0 auto;
+        border: 1px solid #d9ded8;
+        border-radius: 999px;
+        padding: 8px 11px;
+        background: white;
+        color: #707a74;
+        font-size: 10px;
+        font-weight: 750;
+        cursor: pointer;
+      }
+
+      .chip.selected {
+        border-color: #9eb4a8;
+        background: var(--sage-soft);
+        color: var(--sage);
+      }
+
+      .segmented {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
+        padding: 4px;
+        border-radius: 14px;
+        background: #e9ece7;
+      }
+
+      .segmented button {
+        border: 0;
+        border-radius: 10px;
+        padding: 8px;
+        background: transparent;
+        color: #717a75;
+        font-size: 10px;
+        font-weight: 750;
+        cursor: pointer;
+      }
+
+      .segmented button.active {
+        background: white;
+        color: var(--ink);
+        box-shadow: 0 2px 6px rgba(36, 49, 44, .08);
+      }
+
+      .impact {
+        margin: 14px 0;
+        padding: 11px 13px;
+        border-radius: 13px;
+        background: var(--sage-soft);
+        color: var(--sage);
+        font-size: 10px;
+        line-height: 1.45;
+      }
+
+      .save {
+        width: 100%;
+        border: 0;
+        border-radius: 15px;
+        padding: 13px;
+        background: var(--action);
+        color: var(--action-ink);
+        font-size: 12px;
+        font-weight: 800;
+        cursor: pointer;
+      }
+
+      @media (max-width: 820px) {
+        .stage {
+          display: block;
+          padding: 0;
+          background: var(--paper);
+        }
+
+        .concept { display: none; }
+
+        .phone {
+          width: 100%;
+          height: 100vh;
+          min-height: 600px;
+          border: 0;
+          border-radius: 0;
+          box-shadow: none;
+        }
+
+        .phone::before { display: none; }
+        .topbar { padding-top: 16px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="stage">
+      <section class="concept" aria-labelledby="concept-title">
+        <div class="concept__mark">D/</div>
+        <p>Interface direction 01</p>
+        <h1 id="concept-title">Money between friends, without the noise.</h1>
+        <p class="concept__body">A calm, mobile-first direction for Div It. The daily view answers three things: where you stand, what needs attention, and what happened recently.</p>
+        <ul class="concept__notes">
+          <li>Warm neutral surfaces and one restrained accent</li>
+          <li>Human balance language instead of accounting jargon</li>
+          <li>Sync and conflicts visible without dominating the screen</li>
+          <li>Setup and recovery kept away from daily expense entry</li>
+        </ul>
+      </section>
+
+      <section class="phone" aria-label="Interactive Div It mobile mockup">
+        <div class="app">
+          <header class="topbar">
+            <button class="group-picker" type="button">
+              <span class="group-avatar" aria-hidden="true">🌿</span>
+              <span class="group-label"><small>Group</small><strong>Seoul weekend</strong></span>
+              <span class="chevron" aria-hidden="true">⌄</span>
+            </button>
+            <span class="top-actions">
+              <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch to light theme" title="Switch theme">☀</button>
+              <button class="sync" type="button">Up to date</button>
+            </span>
+          </header>
+
+          <section class="view active" data-view="activity">
+            <div class="hello"><small>Friday, 5 September</small><h2>Hi, Alex.</h2></div>
+            <article class="balance-card">
+              <p class="balance-card__label">Your balance</p>
+              <p class="balance-card__amount">You’re owed HK$352.50</p>
+              <div class="balance-card__detail">
+                <span class="mini-faces"><span class="mini-face">M</span><span class="mini-face">S</span></span>
+                Maya and Sam owe you
+              </div>
+            </article>
+
+            <button class="review" type="button">
+              <span class="review__icon" aria-hidden="true">◇</span>
+              <span><strong>1 expense needs review</strong><span>Two edits were made while offline</span></span>
+            </button>
+
+            <div class="section-head"><h3>Recent activity</h3><button type="button">See audit history</button></div>
+            <div class="activity-list">
+              <article class="activity-row">
+                <span class="activity-icon" aria-hidden="true">🍜</span>
+                <span class="activity-copy"><strong>Noodle dinner</strong><span>Maya paid · split with 3</span></span>
+                <span class="activity-money">HK$420<span>you owe HK$140</span></span>
+              </article>
+              <article class="activity-row">
+                <span class="activity-icon" aria-hidden="true">🚕</span>
+                <span class="activity-copy"><strong>Airport taxi</strong><span>You paid · split with 3</span></span>
+                <span class="activity-money">HK$315<span>you lent HK$210</span></span>
+              </article>
+              <article class="activity-row">
+                <span class="activity-icon" aria-hidden="true">🏡</span>
+                <span class="activity-copy"><strong>Guesthouse</strong><span>You paid · split with 3</span></span>
+                <span class="activity-money">HK$1,260<span>you lent HK$840</span></span>
+              </article>
+              <article class="activity-row">
+                <span class="activity-icon" aria-hidden="true">✓</span>
+                <span class="activity-copy"><strong>Sam settled up</strong><span>Bank transfer · recorded by Sam</span></span>
+                <span class="activity-money">HK$557.50<span>received</span></span>
+              </article>
+            </div>
+          </section>
+
+          <section class="view" data-view="balances">
+            <h2 class="page-title">Balances</h2>
+            <article class="balance-card">
+              <p class="balance-card__label">Across this group</p>
+              <p class="balance-card__amount">You’re owed HK$352.50</p>
+              <div class="balance-card__detail">Two payments would settle your balance</div>
+            </article>
+
+            <div class="section-head"><h3>Suggested settlements</h3></div>
+            <article class="settlement">
+              <span class="person-avatar">M</span>
+              <span><strong>Maya pays you</strong><span>Suggested payment</span></span>
+              <button type="button">HK$240</button>
+            </article>
+            <article class="settlement">
+              <span class="person-avatar" style="background:#dbe3eb;color:#475563">S</span>
+              <span><strong>Sam pays you</strong><span>Suggested payment</span></span>
+              <button type="button">HK$112.50</button>
+            </article>
+
+            <div class="section-head"><h3>Everyone</h3></div>
+            <div class="panel">
+              <article class="member-row">
+                <span class="person-avatar" style="background:#dbe6df;color:#476b5b">A</span>
+                <span class="member-copy"><strong>You</strong><span>Paid HK$1,575 total</span></span>
+                <span class="member-balance owed">+HK$352.50</span>
+              </article>
+              <article class="member-row">
+                <span class="person-avatar">M</span>
+                <span class="member-copy"><strong>Maya</strong><span>Paid HK$420 total</span></span>
+                <span class="member-balance owes">−HK$240</span>
+              </article>
+              <article class="member-row">
+                <span class="person-avatar" style="background:#dbe3eb;color:#475563">S</span>
+                <span class="member-copy"><strong>Sam</strong><span>Paid HK$557.50 total</span></span>
+                <span class="member-balance owes">−HK$112.50</span>
+              </article>
+            </div>
+          </section>
+
+          <section class="view" data-view="group">
+            <h2 class="page-title">Group</h2>
+            <div class="section-head"><h3>People</h3><button type="button">Manage</button></div>
+            <div class="panel">
+              <article class="member-row">
+                <span class="person-avatar" style="background:#dbe6df;color:#476b5b">A</span>
+                <span class="member-copy"><strong>Alex · You</strong><span>Organizer · this device</span></span>
+                <span class="status-good">Active</span>
+              </article>
+              <article class="member-row">
+                <span class="person-avatar">M</span>
+                <span class="member-copy"><strong>Maya</strong><span>1 authorized device</span></span>
+                <span class="chevron">›</span>
+              </article>
+              <article class="member-row">
+                <span class="person-avatar" style="background:#dbe3eb;color:#475563">S</span>
+                <span class="member-copy"><strong>Sam</strong><span>1 authorized device</span></span>
+                <span class="chevron">›</span>
+              </article>
+            </div>
+            <button class="invite-button" type="button">Invite a person or device</button>
+
+            <div class="section-head"><h3>Data &amp; sync</h3></div>
+            <div class="panel">
+              <article class="setting-row">
+                <span><strong>Sync status</strong><span>Last updated just now</span></span>
+                <span class="status-good">Up to date</span>
+              </article>
+              <article class="setting-row">
+                <span><strong>Recovery backup</strong><span>Created 2 days ago</span></span>
+                <button class="small-action" type="button">Update</button>
+              </article>
+              <article class="setting-row">
+                <span><strong>Export group</strong><span>CSV or readable JSON</span></span>
+                <span class="chevron">›</span>
+              </article>
+            </div>
+
+            <div class="section-head"><h3>Settings</h3></div>
+            <div class="panel">
+              <article class="setting-row"><span><strong>Group name</strong><span>Seoul weekend</span></span><span class="chevron">›</span></article>
+              <article class="setting-row"><span><strong>Currency</strong><span>Hong Kong dollar</span></span><strong>HKD</strong></article>
+            </div>
+          </section>
+        </div>
+
+        <button class="expense-fab" type="button" data-open-sheet><b>＋</b> Add expense</button>
+
+        <nav class="bottom-nav" aria-label="Primary">
+          <button class="nav-button active" type="button" data-target="activity">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M5 5h14M5 12h14M5 19h9" stroke-linecap="round"/></svg>
+            Activity
+          </button>
+          <button class="nav-button" type="button" data-target="balances">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M4 7h16M7 4v6m10-6v6M6 20l4-6 3 3 5-7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Balances
+          </button>
+          <button class="nav-button" type="button" data-target="group">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="9" cy="8" r="3"/><path d="M3.5 19c.4-3.3 2.2-5 5.5-5s5.1 1.7 5.5 5M15 6.3a3 3 0 0 1 0 5.4M16 14c2.7.2 4.2 1.9 4.5 5" stroke-linecap="round"/></svg>
+            Group
+          </button>
+        </nav>
+
+        <div class="scrim" data-scrim>
+          <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="expense-title">
+            <div class="sheet__handle"></div>
+            <div class="sheet__head"><h2 id="expense-title">Add expense</h2><button class="close" type="button" data-close-sheet aria-label="Close">×</button></div>
+            <div class="amount-field"><span>HK$</span><input value="420" inputmode="decimal" aria-label="Amount"></div>
+            <div class="field"><label for="expense-name">What was it?</label><input class="text-input" id="expense-name" value="Noodle dinner"></div>
+            <div class="field"><span>Paid by</span><button class="choice-row" type="button"><span>Maya</span><span class="chevron">Change ›</span></button></div>
+            <div class="field"><span>Split with</span><div class="chips"><button class="chip selected" type="button">Alex</button><button class="chip selected" type="button">Maya</button><button class="chip selected" type="button">Sam</button></div></div>
+            <div class="field"><span>How to split</span><div class="segmented"><button class="active" type="button">Equally</button><button type="button">Exact amounts</button></div></div>
+            <p class="impact">HK$140 each · You will owe Maya HK$140</p>
+            <button class="save" type="button" data-close-sheet>Save expense</button>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const views = document.querySelectorAll('[data-view]');
+      const navButtons = document.querySelectorAll('[data-target]');
+      const scrim = document.querySelector('[data-scrim]');
+      const themeToggle = document.querySelector('[data-theme-toggle]');
+
+      themeToggle.addEventListener('click', () => {
+        const nextTheme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+        document.documentElement.dataset.theme = nextTheme;
+        themeToggle.textContent = nextTheme === 'dark' ? '☀' : '☾';
+        themeToggle.setAttribute('aria-label', nextTheme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+      });
+
+      navButtons.forEach((button) => {
+        button.addEventListener('click', () => {
+          views.forEach((view) => view.classList.toggle('active', view.dataset.view === button.dataset.target));
+          navButtons.forEach((item) => item.classList.toggle('active', item === button));
+        });
+      });
+
+      document.querySelector('[data-open-sheet]').addEventListener('click', () => scrim.classList.add('open'));
+      document.querySelectorAll('[data-close-sheet]').forEach((button) => {
+        button.addEventListener('click', () => scrim.classList.remove('open'));
+      });
+      scrim.addEventListener('click', (event) => {
+        if (event.target === scrim) scrim.classList.remove('open');
+      });
+      document.querySelectorAll('.chip').forEach((chip) => {
+        chip.addEventListener('click', () => chip.classList.toggle('selected'));
+      });
+      document.querySelectorAll('.segmented button').forEach((button) => {
+        button.addEventListener('click', () => {
+          button.parentElement.querySelectorAll('button').forEach((item) => item.classList.toggle('active', item === button));
+        });
+      });
+    </script>
+  </body>
+</html>
