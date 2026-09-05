@@ -54,7 +54,7 @@ Status meanings:
 
 ### DIV-002 — Add browser-test scaffolding
 
-- Status: READY
+- Status: DONE
 - Depends on: none
 - Deliverable: Add the smallest browser-test setup suitable for the Vite app, a package script, and one page-load test. Do not redesign the UI.
 - Likely files: package.json, package-lock.json, browser-test configuration, one browser test
@@ -90,7 +90,7 @@ Status meanings:
 
 ### DIV-005 — Protect add-expense behavior in a browser
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-002
 - Deliverable: Add two people, submit an equal-split expense, and assert activity and balances through the browser.
 - Likely files: browser test only; production files only if the regression reappears
@@ -112,7 +112,7 @@ Status meanings:
 
 ### DIV-007 — Extract approved design tokens
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-002
 - Deliverable: Move the approved calm dark/light palette, typography, spacing, radii, and semantic colors into production CSS variables. Do not change information architecture yet.
 - Source: docs/design/calm-mobile-mock.html
