@@ -20,6 +20,36 @@ function expense({ id, expenseId, payerId, amount, splits, description }) {
   };
 }
 
+function settlement({ id, settlementId, fromParticipantId, toParticipantId, amount, dependsOn = [] }) {
+  return {
+    id,
+    type: "settlement-recorded",
+    schemaVersion: 1,
+    protocolVersion: 1,
+    groupId,
+    author: { participantId: fromParticipantId, deviceId: `device-${fromParticipantId}`, keyId: `key-${fromParticipantId}` },
+    createdAt: "2026-09-05T10:00:00.000Z",
+    dependsOn,
+    payload: { settlementId, currency: "USD", fromParticipantId, toParticipantId, amount },
+    signature: `signature-${id}`
+  };
+}
+
+function reversal({ id, settlementId, reversesEventId, dependsOn = [reversesEventId] }) {
+  return {
+    id,
+    type: "settlement-reversed",
+    schemaVersion: 1,
+    protocolVersion: 1,
+    groupId,
+    author: { participantId: "alice", deviceId: "device-alice", keyId: "key-alice" },
+    createdAt: "2026-09-05T10:00:00.000Z",
+    dependsOn,
+    payload: { settlementId, reversesEventId, reason: "Returned" },
+    signature: `signature-${id}`
+  };
+}
+
 const dinner = expense({
   id: "11111111-1111-4111-8111-111111111111",
   expenseId: "21111111-1111-4111-8111-111111111111",
@@ -51,7 +81,8 @@ test("projects created expenses independently of insertion order", () => {
     quarantined: [],
     unsupported: [],
     readOnly: false,
-    duplicates: []
+    duplicates: [],
+    ignored: []
   };
 
   for (const ordered of permutations([dinner, taxi])) {
@@ -79,7 +110,7 @@ test("always returns zero-sum balances", () => {
   const { balances } = projectLedger({ [dinner.id]: dinner, [taxi.id]: taxi }, projectionContext);
   assert.equal(Object.values(balances).reduce((sum, balance) => sum + balance, 0), 0);
   assert.deepEqual(projectLedger({}, projectionContext), {
-    balances: {}, effective: [], pending: [], quarantined: [], unsupported: [], readOnly: false, duplicates: []
+    balances: {}, effective: [], pending: [], quarantined: [], unsupported: [], readOnly: false, duplicates: [], ignored: []
   });
 });
 
@@ -154,6 +185,77 @@ test("re-evaluates pending events when dependencies arrive", () => {
   assert.deepEqual(complete.pending, []);
   assert.deepEqual(complete.effective.map((event) => event.id), [dependent.id, dependency.id].sort());
   assert.deepEqual(complete, projectLedger(new Map([[dependency.id, dependency], [dependent.id, dependent]]), projectionContext));
+});
+
+test("projects a settlement onto only its named participants", () => {
+  const payment = settlement({
+    id: "55555555-5555-4555-8555-555555555555",
+    settlementId: "65555555-5555-4555-8555-555555555555",
+    fromParticipantId: "bob",
+    toParticipantId: "alice",
+    amount: 800
+  });
+  const result = projectLedger({ [dinner.id]: dinner, [payment.id]: payment }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 0, bob: 0 });
+  assert.deepEqual(result.effective.map((event) => event.id), [dinner.id, payment.id]);
+});
+
+test("reverses a valid settlement exactly", () => {
+  const payment = settlement({
+    id: "55555555-5555-4555-8555-555555555555",
+    settlementId: "65555555-5555-4555-8555-555555555555",
+    fromParticipantId: "bob",
+    toParticipantId: "alice",
+    amount: 800
+  });
+  const undo = reversal({
+    id: "75555555-5555-4555-8555-555555555555",
+    settlementId: payment.payload.settlementId,
+    reversesEventId: payment.id
+  });
+  const result = projectLedger({ [undo.id]: undo, [payment.id]: payment }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 0, bob: 0 });
+  assert.deepEqual(result.effective.map((event) => event.id), [payment.id, undo.id]);
+});
+
+test("ignores concurrent duplicate reversals deterministically", () => {
+  const payment = settlement({
+    id: "55555555-5555-4555-8555-555555555555",
+    settlementId: "65555555-5555-4555-8555-555555555555",
+    fromParticipantId: "bob",
+    toParticipantId: "alice",
+    amount: 800
+  });
+  const firstUndo = reversal({ id: "75555555-5555-4555-8555-555555555555", settlementId: payment.payload.settlementId, reversesEventId: payment.id });
+  const secondUndo = reversal({ id: "85555555-5555-4555-8555-555555555555", settlementId: payment.payload.settlementId, reversesEventId: payment.id });
+  const result = projectLedger({ [secondUndo.id]: secondUndo, [payment.id]: payment, [firstUndo.id]: firstUndo }, projectionContext);
+  const reordered = projectLedger(new Map([[firstUndo.id, firstUndo], [payment.id, payment], [secondUndo.id, secondUndo]]), projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 0, bob: 0 });
+  assert.deepEqual(result.effective.map((event) => event.id), [payment.id, firstUndo.id]);
+  assert.deepEqual(result.ignored, [{ id: secondUndo.id, reason: "duplicate-reversal-ignored" }]);
+  assert.deepEqual(reordered, result);
+});
+
+test("quarantines reversals with invalid targets or settlement IDs", () => {
+  const payment = settlement({
+    id: "55555555-5555-4555-8555-555555555555",
+    settlementId: "65555555-5555-4555-8555-555555555555",
+    fromParticipantId: "bob",
+    toParticipantId: "alice",
+    amount: 800
+  });
+  const wrongTarget = reversal({ id: "75555555-5555-4555-8555-555555555555", settlementId: payment.payload.settlementId, reversesEventId: dinner.id, dependsOn: [dinner.id] });
+  const wrongSettlement = reversal({ id: "85555555-5555-4555-8555-555555555555", settlementId: "95555555-5555-4555-8555-555555555555", reversesEventId: payment.id });
+  const result = projectLedger({ [dinner.id]: dinner, [payment.id]: payment, [wrongTarget.id]: wrongTarget, [wrongSettlement.id]: wrongSettlement }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 0, bob: 0 });
+  assert.deepEqual(result.quarantined, [
+    { id: wrongTarget.id, reason: "invalid-reference" },
+    { id: wrongSettlement.id, reason: "invalid-reference" }
+  ]);
 });
 
 test("rejects events outside the trusted group and currency", () => {
