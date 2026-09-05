@@ -43,7 +43,7 @@ Status meanings:
 
 ### DIV-001 — Establish the unit-test command
 
-- Status: READY
+- Status: DONE
 - Depends on: none
 - Deliverable: Convert the existing ledger check to Node's built-in test runner and add a non-watch npm test command. Do not change ledger behavior.
 - Likely files: package.json, ledger.test.mjs
@@ -79,7 +79,7 @@ Status meanings:
 
 ### DIV-004 — Cover existing ledger behavior
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-001
 - Deliverable: Add focused tests for cents, makeExpense, balances, and settlementPlan without changing production behavior.
 - Likely files: ledger.test.mjs
