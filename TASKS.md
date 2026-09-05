@@ -160,7 +160,7 @@ Status meanings:
 
 ### DIV-013 — Project settlements and reversals
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-012
 - Deliverable: Add settlement-recorded and settlement-reversed semantics.
 - Acceptance:
@@ -170,7 +170,7 @@ Status meanings:
 
 ### DIV-014 — Project expense revisions and voids
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-013
 - Deliverable: Add uncontested expense-revised and expense-voided chains.
 - Acceptance:

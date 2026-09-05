@@ -57,6 +57,7 @@ export function projectLedger(eventsById, context) {
   const quarantined = [];
   const unsupported = [];
   const duplicates = [];
+  const ignored = [];
   const parsedEntries = [];
   const variantsById = new Map();
 
@@ -167,6 +168,7 @@ export function projectLedger(eventsById, context) {
     }
   }
 
+  const reversedSettlementIds = new Set();
   for (const [id, event] of parsedEntries) {
     if (blockedByMissing.has(id)) {
       const missingDependencyIds = event.dependsOn.filter((dependencyId) => !readyEventIds.has(dependencyId));
@@ -174,6 +176,30 @@ export function projectLedger(eventsById, context) {
       continue;
     }
     if (cyclicEventIds.has(id)) continue;
+    if (event.type === "settlement-recorded") {
+      addBalance(balancesByParticipant, event.payload.fromParticipantId, event.payload.amount);
+      addBalance(balancesByParticipant, event.payload.toParticipantId, -event.payload.amount);
+      effective.push(event);
+      continue;
+    }
+    if (event.type === "settlement-reversed") {
+      const target = eventsByValidId.get(event.payload.reversesEventId);
+      if (!target
+        || target.type !== "settlement-recorded"
+        || target.payload.settlementId !== event.payload.settlementId) {
+        quarantined.push({ id, reason: "invalid-reference" });
+        continue;
+      }
+      if (reversedSettlementIds.has(event.payload.settlementId)) {
+        ignored.push({ id, reason: "duplicate-reversal-ignored" });
+        continue;
+      }
+      reversedSettlementIds.add(event.payload.settlementId);
+      addBalance(balancesByParticipant, target.payload.fromParticipantId, -target.payload.amount);
+      addBalance(balancesByParticipant, target.payload.toParticipantId, target.payload.amount);
+      effective.push(event);
+      continue;
+    }
     if (event.type !== "expense-created") continue;
 
     addBalance(balancesByParticipant, event.payload.payerId, event.payload.amount);
@@ -185,7 +211,7 @@ export function projectLedger(eventsById, context) {
   const total = Object.values(balances).reduce((sum, balance) => sum + BigInt(balance), 0n);
   if (total !== 0n) throw new Error("non-zero-sum");
 
-  return { balances, effective, pending, quarantined, unsupported, readOnly: unsupported.length > 0, duplicates };
+  return { balances, effective, pending, quarantined, unsupported, readOnly: unsupported.length > 0, duplicates, ignored };
 }
 
 export function formatCents(value, currency = "USD") {
