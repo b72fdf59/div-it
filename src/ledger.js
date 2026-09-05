@@ -1,7 +1,51 @@
+import { parseEvent } from "./events.js";
+
 export function cents(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) throw new Error("Enter an amount greater than zero.");
   return Math.round(number * 100);
+}
+
+function eventEntries(eventsById) {
+  if (eventsById instanceof Map) return [...eventsById.entries()];
+  if (eventsById && typeof eventsById === "object" && !Array.isArray(eventsById)) return Object.entries(eventsById);
+  throw new TypeError("eventsById must be an object or Map");
+}
+
+function compareIds([left], [right]) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+function addBalance(balancesByParticipant, participantId, amount) {
+  const next = (balancesByParticipant.get(participantId) ?? 0) + amount;
+  if (!Number.isSafeInteger(next)) throw new RangeError("balance-overflow");
+  balancesByParticipant.set(participantId, next);
+}
+
+export function projectLedger(eventsById) {
+  const entries = eventEntries(eventsById).sort(compareIds);
+  const balancesByParticipant = new Map();
+  const effective = [];
+
+  for (const [id, rawEvent] of entries) {
+    const parsed = parseEvent(rawEvent);
+    if (!parsed.ok) throw new TypeError(parsed.reason);
+    if (id !== parsed.event.id) throw new TypeError("event-id-mismatch");
+    if (parsed.event.type !== "expense-created") continue;
+
+    const event = parsed.event;
+    addBalance(balancesByParticipant, event.payload.payerId, event.payload.amount);
+    for (const split of event.payload.splits) addBalance(balancesByParticipant, split.participantId, -split.amount);
+    effective.push(event);
+  }
+
+  const balances = Object.fromEntries([...balancesByParticipant.entries()].sort(compareIds));
+  const total = Object.values(balances).reduce((sum, balance) => sum + BigInt(balance), 0n);
+  if (total !== 0n) throw new Error("non-zero-sum");
+
+  return { balances, effective };
 }
 
 export function formatCents(value, currency = "USD") {
