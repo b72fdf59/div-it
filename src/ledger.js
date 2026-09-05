@@ -24,15 +24,24 @@ function addBalance(balancesByParticipant, participantId, amount) {
   balancesByParticipant.set(participantId, next);
 }
 
-export function projectLedger(eventsById) {
+export function projectLedger(eventsById, context) {
+  if (!context
+    || typeof context !== "object"
+    || typeof context.groupId !== "string"
+    || typeof context.currency !== "string") throw new TypeError("invalid-projection-context");
+
   const entries = eventEntries(eventsById).sort(compareIds);
+  const knownEventIds = new Set(entries.map(([id]) => id));
   const balancesByParticipant = new Map();
   const effective = [];
 
   for (const [id, rawEvent] of entries) {
-    const parsed = parseEvent(rawEvent);
+    const parsed = parseEvent(rawEvent, { knownEventIds });
     if (!parsed.ok) throw new TypeError(parsed.reason);
     if (id !== parsed.event.id) throw new TypeError("event-id-mismatch");
+    if (parsed.event.groupId !== context.groupId) throw new TypeError("group-mismatch");
+    if (Object.hasOwn(parsed.event.payload, "currency")
+      && parsed.event.payload.currency !== context.currency) throw new TypeError("currency-mismatch");
     if (parsed.event.type !== "expense-created") continue;
 
     const event = parsed.event;

@@ -1,4 +1,4 @@
-const EVENT_TYPES = new Set([
+export const EVENT_TYPES = Object.freeze([
   "expense-created",
   "expense-revised",
   "expense-voided",
@@ -7,6 +7,7 @@ const EVENT_TYPES = new Set([
   "opening-balances-imported",
   "conflict-resolved"
 ]);
+const EVENT_TYPE_SET = new Set(EVENT_TYPES);
 
 const ENVELOPE_FIELDS = [
   "id",
@@ -183,7 +184,7 @@ export function parseEvent(raw, { knownEventIds } = {}) {
   if (!isUuid(event.id) || !isUuid(event.groupId)) return failure("invalid-id");
   if (!Number.isSafeInteger(event.schemaVersion) || !Number.isSafeInteger(event.protocolVersion) || event.schemaVersion < 1 || event.protocolVersion < 1) return failure("invalid-version");
   if (event.schemaVersion !== 1 || event.protocolVersion !== 1) return failure("unsupported-version");
-  if (!EVENT_TYPES.has(event.type)) return failure("unsupported-event-type");
+  if (!EVENT_TYPE_SET.has(event.type)) return failure("unsupported-event-type");
   if (!AUTHOR_FIELDS.every((field) => isIdentifier(event.author[field])) || !isTimestamp(event.createdAt)) return failure("invalid-envelope");
   if (!Array.isArray(event.dependsOn) || !event.dependsOn.every(isUuid) || !isSortedUnique(event.dependsOn) || event.dependsOn.includes(event.id)) return failure("invalid-reference");
   if (typeof event.signature !== "string" || !SIGNATURE.test(event.signature)) return failure("unauthenticated");
@@ -198,5 +199,3 @@ export function parseEvent(raw, { knownEventIds } = {}) {
 
   return { ok: true, event: stableEvent(event) };
 }
-
-export { EVENT_TYPES };

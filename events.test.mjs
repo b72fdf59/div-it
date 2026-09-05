@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseEvent } from "./src/events.js";
+import { EVENT_TYPES, parseEvent } from "./src/events.js";
 
 const ids = {
   event: "11111111-1111-4111-8111-111111111111",
@@ -104,4 +104,10 @@ test("does not mutate object input", () => {
   const before = structuredClone(input);
   parseEvent(input);
   assert.deepEqual(input, before);
+});
+
+test("does not expose a mutable event-type registry", () => {
+  assert.equal(Object.isFrozen(EVENT_TYPES), true);
+  assert.throws(() => EVENT_TYPES.push("forged"), TypeError);
+  assert.equal(reasonFor(envelope("forged", {})), "unsupported-event-type");
 });
