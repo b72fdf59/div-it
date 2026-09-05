@@ -34,36 +34,87 @@ export function projectLedger(eventsById, context) {
   const balancesByParticipant = new Map();
   const effective = [];
   const pending = [];
+  const quarantined = [];
   const parsedEntries = [];
 
   for (const [id, rawEvent] of entries) {
     const parsed = parseEvent(rawEvent);
-    if (!parsed.ok) throw new TypeError(parsed.reason);
-    if (id !== parsed.event.id) throw new TypeError("event-id-mismatch");
-    if (parsed.event.groupId !== context.groupId) throw new TypeError("group-mismatch");
+    if (!parsed.ok) {
+      quarantined.push({ id, reason: parsed.reason });
+      continue;
+    }
+    if (id !== parsed.event.id) {
+      quarantined.push({ id, reason: "event-id-mismatch" });
+      continue;
+    }
+    if (parsed.event.groupId !== context.groupId) {
+      quarantined.push({ id, reason: "group-mismatch" });
+      continue;
+    }
     if (Object.hasOwn(parsed.event.payload, "currency")
-      && parsed.event.payload.currency !== context.currency) throw new TypeError("currency-mismatch");
+      && parsed.event.payload.currency !== context.currency) {
+      quarantined.push({ id, reason: "currency-mismatch" });
+      continue;
+    }
     parsedEntries.push([id, parsed.event]);
   }
 
-  const readyEventIds = new Set();
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const [id, event] of parsedEntries) {
-      if (!readyEventIds.has(id) && event.dependsOn.every((dependencyId) => readyEventIds.has(dependencyId))) {
-        readyEventIds.add(id);
-        changed = true;
+  const eventsByValidId = new Map(parsedEntries);
+  const dependentsById = new Map(parsedEntries.map(([id]) => [id, []]));
+  const blockedByMissing = new Set();
+  for (const [id, event] of parsedEntries) {
+    for (const dependencyId of event.dependsOn) {
+      if (eventsByValidId.has(dependencyId)) dependentsById.get(dependencyId).push(id);
+      else blockedByMissing.add(id);
+    }
+  }
+
+  const blockedQueue = [...blockedByMissing];
+  for (let index = 0; index < blockedQueue.length; index++) {
+    for (const dependentId of dependentsById.get(blockedQueue[index]) ?? []) {
+      if (!blockedByMissing.has(dependentId)) {
+        blockedByMissing.add(dependentId);
+        blockedQueue.push(dependentId);
       }
     }
   }
 
+  const unresolvedDependencies = new Map();
+  const readyQueue = [];
   for (const [id, event] of parsedEntries) {
-    if (!readyEventIds.has(id)) {
+    if (blockedByMissing.has(id)) continue;
+    const count = event.dependsOn.length;
+    unresolvedDependencies.set(id, count);
+    if (count === 0) readyQueue.push(id);
+  }
+
+  const readyEventIds = new Set();
+  for (let index = 0; index < readyQueue.length; index++) {
+    const id = readyQueue[index];
+    readyEventIds.add(id);
+    for (const dependentId of dependentsById.get(id)) {
+      if (blockedByMissing.has(dependentId)) continue;
+      const remaining = unresolvedDependencies.get(dependentId) - 1;
+      unresolvedDependencies.set(dependentId, remaining);
+      if (remaining === 0) readyQueue.push(dependentId);
+    }
+  }
+
+  const cyclicEventIds = new Set();
+  for (const [id] of parsedEntries) {
+    if (!blockedByMissing.has(id) && !readyEventIds.has(id)) {
+      cyclicEventIds.add(id);
+      quarantined.push({ id, reason: "cyclic-dependency" });
+    }
+  }
+
+  for (const [id, event] of parsedEntries) {
+    if (blockedByMissing.has(id)) {
       const missingDependencyIds = event.dependsOn.filter((dependencyId) => !readyEventIds.has(dependencyId));
       pending.push({ event, reason: "missing-dependency", missingDependencyIds });
       continue;
     }
+    if (cyclicEventIds.has(id)) continue;
     if (event.type !== "expense-created") continue;
 
     addBalance(balancesByParticipant, event.payload.payerId, event.payload.amount);
@@ -75,7 +126,7 @@ export function projectLedger(eventsById, context) {
   const total = Object.values(balances).reduce((sum, balance) => sum + BigInt(balance), 0n);
   if (total !== 0n) throw new Error("non-zero-sum");
 
-  return { balances, effective, pending };
+  return { balances, effective, pending, quarantined };
 }
 
 export function formatCents(value, currency = "USD") {

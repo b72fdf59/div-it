@@ -47,7 +47,8 @@ test("projects created expenses independently of insertion order", () => {
   const expected = {
     balances: { alice: 300, bob: 200, carol: -500 },
     effective: [dinner, taxi],
-    pending: []
+    pending: [],
+    quarantined: []
   };
 
   for (const ordered of permutations([dinner, taxi])) {
@@ -74,7 +75,7 @@ test("does not mutate event input or expose references to it", () => {
 test("always returns zero-sum balances", () => {
   const { balances } = projectLedger({ [dinner.id]: dinner, [taxi.id]: taxi }, projectionContext);
   assert.equal(Object.values(balances).reduce((sum, balance) => sum + balance, 0), 0);
-  assert.deepEqual(projectLedger({}, projectionContext), { balances: {}, effective: [], pending: [] });
+  assert.deepEqual(projectLedger({}, projectionContext), { balances: {}, effective: [], pending: [], quarantined: [] });
 });
 
 test("keeps missing-dependency events pending without blocking valid balances", () => {
@@ -108,14 +109,8 @@ test("rejects events outside the trusted group and currency", () => {
   const otherGroup = { ...dinner, groupId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" };
   const otherCurrency = { ...dinner, payload: { ...dinner.payload, currency: "EUR" } };
 
-  assert.throws(
-    () => projectLedger({ [otherGroup.id]: otherGroup }, projectionContext),
-    { name: "TypeError", message: "group-mismatch" }
-  );
-  assert.throws(
-    () => projectLedger({ [otherCurrency.id]: otherCurrency }, projectionContext),
-    { name: "TypeError", message: "currency-mismatch" }
-  );
+  assert.deepEqual(projectLedger({ [otherGroup.id]: otherGroup }, projectionContext).quarantined, [{ id: otherGroup.id, reason: "group-mismatch" }]);
+  assert.deepEqual(projectLedger({ [otherCurrency.id]: otherCurrency }, projectionContext).quarantined, [{ id: otherCurrency.id, reason: "currency-mismatch" }]);
 });
 
 test("requires trusted projection context", () => {
@@ -123,4 +118,27 @@ test("requires trusted projection context", () => {
     () => projectLedger({ [dinner.id]: dinner }),
     { name: "TypeError", message: "invalid-projection-context" }
   );
+});
+
+test("quarantines malformed events without blocking valid balances", () => {
+  const malformedId = "55555555-5555-4555-8555-555555555555";
+  const result = projectLedger({ [dinner.id]: dinner, [malformedId]: { nope: true } }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 800, bob: -800 });
+  assert.deepEqual(result.effective, [dinner]);
+  assert.deepEqual(result.quarantined, [{ id: malformedId, reason: "invalid-envelope" }]);
+});
+
+test("quarantines dependency cycles", () => {
+  const first = { ...dinner, dependsOn: [taxi.id] };
+  const second = { ...taxi, dependsOn: [dinner.id] };
+  const result = projectLedger({ [first.id]: first, [second.id]: second }, projectionContext);
+
+  assert.deepEqual(result.balances, {});
+  assert.deepEqual(result.effective, []);
+  assert.deepEqual(result.pending, []);
+  assert.deepEqual(result.quarantined, [
+    { id: first.id, reason: "cyclic-dependency" },
+    { id: second.id, reason: "cyclic-dependency" }
+  ]);
 });

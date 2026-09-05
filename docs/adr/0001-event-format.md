@@ -252,6 +252,7 @@ These examples describe the minimum diagnosis surface for validators and tests:
 | Two splits use the same participant ID | `duplicate-participant` | Quarantine |
 | Opening balances sum to 1 cent | `non-zero-sum` | Quarantine |
 | `dependsOn` names an absent event | `missing-dependency` | Pending |
+| Dependency graph contains or reaches a cycle | `cyclic-dependency` | Quarantine cycle-blocked events |
 | Revision points to a different expense | `invalid-reference` | Quarantine |
 | Reversal points to a non-settlement | `invalid-reference` | Quarantine |
 | Concurrent or later reversal of an already reversed settlement | `duplicate-reversal-ignored` | Preserve; neutralize once |

@@ -128,4 +128,21 @@ test("rejects events that exceed mobile-safe resource limits", () => {
     splits: Array.from({ length: 256 }, (_, index) => ({ participantId: `${index}-${"😀".repeat(120)}`, amount: 1 }))
   });
   assert.equal(reasonFor(oversizedObject), "event-too-large");
+
+  const failOnTraversal = new Proxy(Array(257), {
+    get(target, property, receiver) {
+      if (property === "every") throw new Error("oversized collection was traversed");
+      return Reflect.get(target, property, receiver);
+    }
+  });
+  assert.equal(reasonFor(envelope("expense-created", createdPayload, { dependsOn: failOnTraversal })), "event-too-large");
+
+  const resolution = envelope("conflict-resolved", {
+    resolutionId: ids.expense,
+    expenseId: ids.group,
+    resolvesEventIds: failOnTraversal,
+    chosenEventId: ids.dependency,
+    supersedesResolutionEventIds: []
+  });
+  assert.equal(reasonFor(resolution), "event-too-large");
 });

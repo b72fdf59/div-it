@@ -157,8 +157,9 @@ function validatePayload(event) {
   if (!hasExactFields(payload, ["resolutionId", "expenseId", "resolvesEventIds", "chosenEventId", "supersedesResolutionEventIds"], ["note"])) return failure("invalid-payload");
   if (!isUuid(payload.resolutionId) || !isUuid(payload.expenseId) || !isUuid(payload.chosenEventId)) return failure("invalid-id");
   for (const references of [payload.resolvesEventIds, payload.supersedesResolutionEventIds]) {
-    if (!Array.isArray(references) || !references.every(isUuid) || !isSortedUnique(references)) return failure("invalid-reference");
+    if (!Array.isArray(references)) return failure("invalid-reference");
     if (references.length > MAX_COLLECTION_ENTRIES) return failure("event-too-large");
+    if (!references.every(isUuid) || !isSortedUnique(references)) return failure("invalid-reference");
   }
   if (payload.resolvesEventIds.length < 2
     || !payload.resolvesEventIds.includes(payload.chosenEventId)
@@ -201,8 +202,9 @@ export function parseEvent(raw, { knownEventIds } = {}) {
   if (!AUTHOR_FIELDS.every((field) => isIdentifier(event.author[field]))) return failure("invalid-envelope");
   if (typeof event.createdAt === "string" && event.createdAt.length > 30) return failure("event-too-large");
   if (!isTimestamp(event.createdAt)) return failure("invalid-envelope");
-  if (!Array.isArray(event.dependsOn) || !event.dependsOn.every(isUuid) || !isSortedUnique(event.dependsOn) || event.dependsOn.includes(event.id)) return failure("invalid-reference");
+  if (!Array.isArray(event.dependsOn)) return failure("invalid-reference");
   if (event.dependsOn.length > MAX_COLLECTION_ENTRIES) return failure("event-too-large");
+  if (!event.dependsOn.every(isUuid) || !isSortedUnique(event.dependsOn) || event.dependsOn.includes(event.id)) return failure("invalid-reference");
   if (typeof event.signature === "string" && event.signature.length > MAX_SIGNATURE_LENGTH) return failure("event-too-large");
   if (typeof event.signature !== "string" || !SIGNATURE.test(event.signature)) return failure("unauthenticated");
 
