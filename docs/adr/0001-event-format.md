@@ -1,6 +1,6 @@
 # ADR 0001: Version-one domain event format
 
-- Status: Proposed for review
+- Status: Accepted
 - Date: 2026-09-05
 - Scope: structural event format and projection rules
 - Decision owners: Div It maintainers and the first pilot group
@@ -271,4 +271,4 @@ The format intentionally leaves cryptographic algorithms and key lifecycle decis
 
 ## Approval gate
 
-This ADR remains `Proposed for review` until a human approves the exact field names, reference semantics, canonicalization rule, and conflict behavior. Approval changes DIV-003 to `DONE` and unblocks event-envelope implementation.
+The exact field names, reference semantics, canonicalization rule, and conflict behavior were approved by the project owner on 2026-09-05. DIV-003 is complete and event-envelope implementation may proceed.
