@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { projectLedger } from "./src/ledger.js";
 
 const groupId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const projectionContext = { groupId, currency: "USD" };
+const projectionContext = { groupId, currency: "USD", isEventAuthorized: () => true };
 
 function expense({ id, expenseId, payerId, amount, splits, description }) {
   return {
@@ -48,7 +48,9 @@ test("projects created expenses independently of insertion order", () => {
     balances: { alice: 300, bob: 200, carol: -500 },
     effective: [dinner, taxi],
     pending: [],
-    quarantined: []
+    quarantined: [],
+    unsupported: [],
+    readOnly: false
   };
 
   for (const ordered of permutations([dinner, taxi])) {
@@ -75,7 +77,9 @@ test("does not mutate event input or expose references to it", () => {
 test("always returns zero-sum balances", () => {
   const { balances } = projectLedger({ [dinner.id]: dinner, [taxi.id]: taxi }, projectionContext);
   assert.equal(Object.values(balances).reduce((sum, balance) => sum + balance, 0), 0);
-  assert.deepEqual(projectLedger({}, projectionContext), { balances: {}, effective: [], pending: [], quarantined: [] });
+  assert.deepEqual(projectLedger({}, projectionContext), {
+    balances: {}, effective: [], pending: [], quarantined: [], unsupported: [], readOnly: false
+  });
 });
 
 test("keeps missing-dependency events pending without blocking valid balances", () => {
@@ -118,6 +122,40 @@ test("requires trusted projection context", () => {
     () => projectLedger({ [dinner.id]: dinner }),
     { name: "TypeError", message: "invalid-projection-context" }
   );
+});
+
+test("fails closed when authorization rejects an event", () => {
+  const context = { ...projectionContext, isEventAuthorized: () => false };
+  const result = projectLedger({ [dinner.id]: dinner }, context);
+
+  assert.deepEqual(result.balances, {});
+  assert.deepEqual(result.effective, []);
+  assert.deepEqual(result.quarantined, [{ id: dinner.id, reason: "unauthenticated" }]);
+});
+
+test("does not let authorization mutate projected events", () => {
+  const context = {
+    ...projectionContext,
+    isEventAuthorized(event) {
+      event.payload.amount = 1;
+      return true;
+    }
+  };
+  const result = projectLedger({ [dinner.id]: dinner }, context);
+
+  assert.deepEqual(result.balances, { alice: 800, bob: -800 });
+  assert.equal(result.effective[0].payload.amount, 2000);
+});
+
+test("marks projections with unsupported events read-only", () => {
+  const future = { ...taxi, schemaVersion: 2 };
+  const result = projectLedger({ [dinner.id]: dinner, [future.id]: future }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 800, bob: -800 });
+  assert.deepEqual(result.effective, [dinner]);
+  assert.deepEqual(result.quarantined, []);
+  assert.deepEqual(result.unsupported, [{ id: future.id, reason: "unsupported-version" }]);
+  assert.equal(result.readOnly, true);
 });
 
 test("quarantines malformed events without blocking valid balances", () => {

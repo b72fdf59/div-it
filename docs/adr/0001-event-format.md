@@ -206,6 +206,10 @@ An opening balance is a signed participant balance: positive means the participa
 
 Invalid, unauthenticated, and invariant-breaking events are quarantined. Missing-dependency events are pending and may become effective when the dependency arrives. The last valid projection remains active, and the UI receives a stable diagnostic code rather than needing to parse an error string.
 
+The projector requires an authorization function supplied by the identity layer and fails closed when it is absent, throws, or does not explicitly approve an event. Until cryptographic identity support exists, test and prototype callers may provide an explicit development-only authorization function; production synchronization must not do so.
+
+Unsupported versions and event types are reported separately from quarantined input and make the projection read-only. The last understood balance may remain visible, but the UI must label it incomplete rather than presenting it as current.
+
 ### Duplicates and ID collisions
 
 - An exact duplicate means the same `id` and identical signed content. It is applied once and reported as `duplicate-ignored`.

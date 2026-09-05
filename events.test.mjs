@@ -80,10 +80,9 @@ test("returns stable reasons for unsupported and malformed envelopes", () => {
   assert.equal(reasonFor("{"), "invalid-json");
 });
 
-test("validates dependency references and reports missing dependencies", () => {
+test("validates dependency references without event-set state", () => {
   const revision = envelope("expense-revised", { ...createdPayload, supersedesEventId: ids.dependency }, { dependsOn: [ids.dependency] });
-  assert.equal(reasonFor(revision, { knownEventIds: new Set() }), "missing-dependency");
-  assert.equal(parseEvent(revision, { knownEventIds: new Set([ids.dependency]) }).ok, true);
+  assert.equal(parseEvent(revision).ok, true);
   assert.equal(reasonFor({ ...revision, dependsOn: [] }), "invalid-reference");
   assert.equal(reasonFor({ ...revision, dependsOn: [ids.dependency, ids.dependency] }), "invalid-reference");
 });

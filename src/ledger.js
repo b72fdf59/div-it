@@ -28,19 +28,23 @@ export function projectLedger(eventsById, context) {
   if (!context
     || typeof context !== "object"
     || typeof context.groupId !== "string"
-    || typeof context.currency !== "string") throw new TypeError("invalid-projection-context");
+    || typeof context.currency !== "string"
+    || typeof context.isEventAuthorized !== "function") throw new TypeError("invalid-projection-context");
 
   const entries = eventEntries(eventsById).sort(compareIds);
   const balancesByParticipant = new Map();
   const effective = [];
   const pending = [];
   const quarantined = [];
+  const unsupported = [];
   const parsedEntries = [];
 
   for (const [id, rawEvent] of entries) {
     const parsed = parseEvent(rawEvent);
     if (!parsed.ok) {
-      quarantined.push({ id, reason: parsed.reason });
+      const diagnostic = { id, reason: parsed.reason };
+      if (parsed.reason === "unsupported-version" || parsed.reason === "unsupported-event-type") unsupported.push(diagnostic);
+      else quarantined.push(diagnostic);
       continue;
     }
     if (id !== parsed.event.id) {
@@ -54,6 +58,16 @@ export function projectLedger(eventsById, context) {
     if (Object.hasOwn(parsed.event.payload, "currency")
       && parsed.event.payload.currency !== context.currency) {
       quarantined.push({ id, reason: "currency-mismatch" });
+      continue;
+    }
+    let authorized = false;
+    try {
+      authorized = context.isEventAuthorized(structuredClone(parsed.event)) === true;
+    } catch {
+      authorized = false;
+    }
+    if (!authorized) {
+      quarantined.push({ id, reason: "unauthenticated" });
       continue;
     }
     parsedEntries.push([id, parsed.event]);
@@ -126,7 +140,7 @@ export function projectLedger(eventsById, context) {
   const total = Object.values(balances).reduce((sum, balance) => sum + BigInt(balance), 0n);
   if (total !== 0n) throw new Error("non-zero-sum");
 
-  return { balances, effective, pending, quarantined };
+  return { balances, effective, pending, quarantined, unsupported, readOnly: unsupported.length > 0 };
 }
 
 export function formatCents(value, currency = "USD") {

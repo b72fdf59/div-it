@@ -182,7 +182,7 @@ function stableEvent(event) {
   };
 }
 
-export function parseEvent(raw, { knownEventIds } = {}) {
+export function parseEvent(raw) {
   if (typeof raw === "string"
     && (raw.length > MAX_EVENT_BYTES || utf8Length(raw) > MAX_EVENT_BYTES)) return failure("event-too-large");
 
@@ -210,11 +210,6 @@ export function parseEvent(raw, { knownEventIds } = {}) {
 
   const payloadFailure = validatePayload(event);
   if (payloadFailure) return payloadFailure;
-
-  if (knownEventIds !== undefined) {
-    const known = knownEventIds instanceof Set ? knownEventIds : new Set(knownEventIds);
-    if (event.dependsOn.some((id) => !known.has(id))) return failure("missing-dependency");
-  }
 
   const stable = stableEvent(event);
   if (utf8Length(JSON.stringify(stable)) > MAX_EVENT_BYTES) return failure("event-too-large");
