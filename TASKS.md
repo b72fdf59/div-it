@@ -101,7 +101,7 @@ Status meanings:
 
 ### DIV-006 — Test exact split, reload, and backup round-trip
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-005
 - Deliverable: Extend browser coverage for exact splits, persistence after reload, JSON export, and import into a clean context.
 - Likely files: browser tests and narrow test helpers
