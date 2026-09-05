@@ -50,7 +50,8 @@ test("projects created expenses independently of insertion order", () => {
     pending: [],
     quarantined: [],
     unsupported: [],
-    readOnly: false
+    readOnly: false,
+    duplicates: []
   };
 
   for (const ordered of permutations([dinner, taxi])) {
@@ -78,7 +79,7 @@ test("always returns zero-sum balances", () => {
   const { balances } = projectLedger({ [dinner.id]: dinner, [taxi.id]: taxi }, projectionContext);
   assert.equal(Object.values(balances).reduce((sum, balance) => sum + balance, 0), 0);
   assert.deepEqual(projectLedger({}, projectionContext), {
-    balances: {}, effective: [], pending: [], quarantined: [], unsupported: [], readOnly: false
+    balances: {}, effective: [], pending: [], quarantined: [], unsupported: [], readOnly: false, duplicates: []
   });
 });
 
@@ -107,6 +108,52 @@ test("keeps transitive missing dependencies pending", () => {
     { id: first.id, missingDependencyIds: [missingId] },
     { id: second.id, missingDependencyIds: [first.id] }
   ]);
+});
+
+test("applies exact duplicate event content once", () => {
+  const duplicate = structuredClone(dinner);
+  const result = projectLedger({ [dinner.id]: [dinner, duplicate] }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 800, bob: -800 });
+  assert.deepEqual(result.effective, [dinner]);
+  assert.deepEqual(result.duplicates, [{ id: dinner.id, reason: "duplicate-ignored", count: 1 }]);
+});
+
+test("does not let an unauthorized duplicate shadow an authorized one", () => {
+  const unauthorized = { ...dinner, signature: "bad" };
+  const context = { ...projectionContext, isEventAuthorized: (event) => event.signature !== "bad" };
+  const result = projectLedger({ [dinner.id]: [unauthorized, dinner] }, context);
+
+  assert.deepEqual(result.balances, { alice: 800, bob: -800 });
+  assert.deepEqual(result.effective, [dinner]);
+  assert.deepEqual(result.quarantined, [{ id: dinner.id, reason: "unauthenticated" }]);
+  assert.deepEqual(result.duplicates, []);
+});
+
+test("quarantines all valid variants of an ID-content collision", () => {
+  const collision = { ...dinner, payload: { ...dinner.payload, description: "Different dinner" } };
+  const result = projectLedger(new Map([[dinner.id, [collision, dinner]]]), projectionContext);
+  const reordered = projectLedger(new Map([[dinner.id, [dinner, collision]]]), projectionContext);
+
+  assert.deepEqual(result.balances, {});
+  assert.deepEqual(result.effective, []);
+  assert.deepEqual(result.pending, []);
+  assert.deepEqual(result.quarantined, [{ id: dinner.id, reason: "id-content-collision" }]);
+  assert.deepEqual(reordered, result);
+});
+
+test("re-evaluates pending events when dependencies arrive", () => {
+  const dependencyId = "99999999-9999-4999-8999-999999999999";
+  const dependency = { ...taxi, id: dependencyId, payload: { ...taxi.payload, expenseId: "89999999-9999-4999-8999-999999999999" } };
+  const dependent = { ...dinner, dependsOn: [dependencyId] };
+  const pending = projectLedger({ [dependent.id]: dependent }, projectionContext);
+  const complete = projectLedger({ [dependent.id]: dependent, [dependency.id]: dependency }, projectionContext);
+
+  assert.equal(pending.effective.length, 0);
+  assert.equal(pending.pending.length, 1);
+  assert.deepEqual(complete.pending, []);
+  assert.deepEqual(complete.effective.map((event) => event.id), [dependent.id, dependency.id].sort());
+  assert.deepEqual(complete, projectLedger(new Map([[dependency.id, dependency], [dependent.id, dependent]]), projectionContext));
 });
 
 test("rejects events outside the trusted group and currency", () => {

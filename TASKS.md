@@ -149,7 +149,7 @@ Status meanings:
 
 ### DIV-012 — Handle duplicates and missing dependencies
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-011
 - Deliverable: Add projector behavior and tests for exact duplicate events, ID/content collisions, and unavailable dependencies.
 - Acceptance:
@@ -160,7 +160,7 @@ Status meanings:
 
 ### DIV-013 — Project settlements and reversals
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-012
 - Deliverable: Add settlement-recorded and settlement-reversed semantics.
 - Acceptance:
