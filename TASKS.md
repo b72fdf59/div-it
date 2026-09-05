@@ -79,7 +79,7 @@ Status meanings:
 
 ### DIV-004 — Cover existing ledger behavior
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-001
 - Deliverable: Add focused tests for cents, makeExpense, balances, and settlementPlan without changing production behavior.
 - Likely files: ledger.test.mjs
