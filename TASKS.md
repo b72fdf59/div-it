@@ -138,7 +138,7 @@ Status meanings:
 
 ### DIV-011 — Project created expenses
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-010
 - Deliverable: Add a pure projectLedger(eventsById) path for expense-created events.
 - Likely files: src/ledger.js, event/projector tests
@@ -149,7 +149,7 @@ Status meanings:
 
 ### DIV-012 — Handle duplicates and missing dependencies
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-011
 - Deliverable: Add projector behavior and tests for exact duplicate events, ID/content collisions, and unavailable dependencies.
 - Acceptance:

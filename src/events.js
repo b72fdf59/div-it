@@ -1,4 +1,4 @@
-const EVENT_TYPES = new Set([
+export const EVENT_TYPES = Object.freeze([
   "expense-created",
   "expense-revised",
   "expense-voided",
@@ -7,6 +7,7 @@ const EVENT_TYPES = new Set([
   "opening-balances-imported",
   "conflict-resolved"
 ]);
+const EVENT_TYPE_SET = new Set(EVENT_TYPES);
 
 const ENVELOPE_FIELDS = [
   "id",
@@ -24,10 +25,17 @@ const AUTHOR_FIELDS = ["participantId", "deviceId", "keyId"];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CURRENCY = /^[A-Z]{3}$/;
 const SIGNATURE = /^[A-Za-z0-9_-]+$/;
-const UTC_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/;
+const UTC_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?Z$/;
+const MAX_EVENT_BYTES = 65_536;
+const MAX_COLLECTION_ENTRIES = 256;
+const MAX_SIGNATURE_LENGTH = 512;
 
 function failure(reason) {
   return { ok: false, reason };
+}
+
+function utf8Length(value) {
+  return new TextEncoder().encode(value).byteLength;
 }
 
 function isObject(value) {
@@ -78,6 +86,7 @@ function validMoney(value, { positive = true } = {}) {
 
 function validateSplits(payload) {
   if (!Array.isArray(payload.splits) || payload.splits.length === 0) return failure("invalid-payload");
+  if (payload.splits.length > MAX_COLLECTION_ENTRIES) return failure("event-too-large");
   const participants = new Set();
   let total = 0n;
   for (const split of payload.splits) {
@@ -132,6 +141,7 @@ function validatePayload(event) {
     if (!hasExactFields(payload, ["importId", "currency", "sourceFormat", "balances"])) return failure("invalid-payload");
     if (!isUuid(payload.importId)) return failure("invalid-id");
     if (!CURRENCY.test(payload.currency) || payload.sourceFormat !== "splitwise-csv" || !Array.isArray(payload.balances) || payload.balances.length === 0) return failure("invalid-payload");
+    if (payload.balances.length > MAX_COLLECTION_ENTRIES) return failure("event-too-large");
     const participants = new Set();
     let total = 0n;
     for (const balance of payload.balances) {
@@ -147,7 +157,9 @@ function validatePayload(event) {
   if (!hasExactFields(payload, ["resolutionId", "expenseId", "resolvesEventIds", "chosenEventId", "supersedesResolutionEventIds"], ["note"])) return failure("invalid-payload");
   if (!isUuid(payload.resolutionId) || !isUuid(payload.expenseId) || !isUuid(payload.chosenEventId)) return failure("invalid-id");
   for (const references of [payload.resolvesEventIds, payload.supersedesResolutionEventIds]) {
-    if (!Array.isArray(references) || !references.every(isUuid) || !isSortedUnique(references)) return failure("invalid-reference");
+    if (!Array.isArray(references)) return failure("invalid-reference");
+    if (references.length > MAX_COLLECTION_ENTRIES) return failure("event-too-large");
+    if (!references.every(isUuid) || !isSortedUnique(references)) return failure("invalid-reference");
   }
   if (payload.resolvesEventIds.length < 2
     || !payload.resolvesEventIds.includes(payload.chosenEventId)
@@ -170,7 +182,10 @@ function stableEvent(event) {
   };
 }
 
-export function parseEvent(raw, { knownEventIds } = {}) {
+export function parseEvent(raw) {
+  if (typeof raw === "string"
+    && (raw.length > MAX_EVENT_BYTES || utf8Length(raw) > MAX_EVENT_BYTES)) return failure("event-too-large");
+
   let event;
   try {
     event = typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -183,20 +198,20 @@ export function parseEvent(raw, { knownEventIds } = {}) {
   if (!isUuid(event.id) || !isUuid(event.groupId)) return failure("invalid-id");
   if (!Number.isSafeInteger(event.schemaVersion) || !Number.isSafeInteger(event.protocolVersion) || event.schemaVersion < 1 || event.protocolVersion < 1) return failure("invalid-version");
   if (event.schemaVersion !== 1 || event.protocolVersion !== 1) return failure("unsupported-version");
-  if (!EVENT_TYPES.has(event.type)) return failure("unsupported-event-type");
-  if (!AUTHOR_FIELDS.every((field) => isIdentifier(event.author[field])) || !isTimestamp(event.createdAt)) return failure("invalid-envelope");
-  if (!Array.isArray(event.dependsOn) || !event.dependsOn.every(isUuid) || !isSortedUnique(event.dependsOn) || event.dependsOn.includes(event.id)) return failure("invalid-reference");
+  if (!EVENT_TYPE_SET.has(event.type)) return failure("unsupported-event-type");
+  if (!AUTHOR_FIELDS.every((field) => isIdentifier(event.author[field]))) return failure("invalid-envelope");
+  if (typeof event.createdAt === "string" && event.createdAt.length > 30) return failure("event-too-large");
+  if (!isTimestamp(event.createdAt)) return failure("invalid-envelope");
+  if (!Array.isArray(event.dependsOn)) return failure("invalid-reference");
+  if (event.dependsOn.length > MAX_COLLECTION_ENTRIES) return failure("event-too-large");
+  if (!event.dependsOn.every(isUuid) || !isSortedUnique(event.dependsOn) || event.dependsOn.includes(event.id)) return failure("invalid-reference");
+  if (typeof event.signature === "string" && event.signature.length > MAX_SIGNATURE_LENGTH) return failure("event-too-large");
   if (typeof event.signature !== "string" || !SIGNATURE.test(event.signature)) return failure("unauthenticated");
 
   const payloadFailure = validatePayload(event);
   if (payloadFailure) return payloadFailure;
 
-  if (knownEventIds !== undefined) {
-    const known = knownEventIds instanceof Set ? knownEventIds : new Set(knownEventIds);
-    if (event.dependsOn.some((id) => !known.has(id))) return failure("missing-dependency");
-  }
-
-  return { ok: true, event: stableEvent(event) };
+  const stable = stableEvent(event);
+  if (utf8Length(JSON.stringify(stable)) > MAX_EVENT_BYTES) return failure("event-too-large");
+  return { ok: true, event: stable };
 }
-
-export { EVENT_TYPES };

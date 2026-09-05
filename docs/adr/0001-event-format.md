@@ -55,6 +55,7 @@ Envelope rules:
 - `dependsOn` is an array of unique event IDs in lexicographic order. It cannot contain the event's own ID. A dependency that is not present leaves the event pending; it does not make the event invalid forever.
 - `payload` is an object matching the selected type. Unknown semantic fields are rejected for this version; preserved future extensions must live in an explicitly namespaced extension field.
 - `signature` is base64url text without padding. Its algorithm and verification rules are intentionally deferred. Structural validation must still require the field and later identity validation must classify a failed signature as `unauthenticated`.
+- An encoded event is at most 65,536 UTF-8 bytes. `dependsOn` and every payload collection contain at most 256 entries, signatures contain at most 512 base64url characters, and timestamps use at most nine fractional-second digits. Larger inputs are quarantined as `event-too-large` before projection.
 
 ### Canonical signed content
 
@@ -205,6 +206,10 @@ An opening balance is a signed participant balance: positive means the participa
 
 Invalid, unauthenticated, and invariant-breaking events are quarantined. Missing-dependency events are pending and may become effective when the dependency arrives. The last valid projection remains active, and the UI receives a stable diagnostic code rather than needing to parse an error string.
 
+The projector requires an authorization function supplied by the identity layer and fails closed when it is absent, throws, or does not explicitly approve an event. Until cryptographic identity support exists, test and prototype callers may provide an explicit development-only authorization function; production synchronization must not do so.
+
+Unsupported versions and event types are reported separately from quarantined input and make the projection read-only. The last understood balance may remain visible, but the UI must label it incomplete rather than presenting it as current.
+
 ### Duplicates and ID collisions
 
 - An exact duplicate means the same `id` and identical signed content. It is applied once and reported as `duplicate-ignored`.
@@ -251,6 +256,7 @@ These examples describe the minimum diagnosis surface for validators and tests:
 | Two splits use the same participant ID | `duplicate-participant` | Quarantine |
 | Opening balances sum to 1 cent | `non-zero-sum` | Quarantine |
 | `dependsOn` names an absent event | `missing-dependency` | Pending |
+| Dependency graph contains or reaches a cycle | `cyclic-dependency` | Quarantine cycle-blocked events |
 | Revision points to a different expense | `invalid-reference` | Quarantine |
 | Reversal points to a non-settlement | `invalid-reference` | Quarantine |
 | Concurrent or later reversal of an already reversed settlement | `duplicate-reversal-ignored` | Preserve; neutralize once |
@@ -259,6 +265,7 @@ These examples describe the minimum diagnosis surface for validators and tests:
 | Event type is not one of the seven supported types | `unsupported-event-type` | Preserve; read-only if money-affecting |
 | Schema or protocol version is unsupported | `unsupported-version` | Preserve; read-only if money-affecting |
 | Signature is absent or fails verification | `unauthenticated` | Quarantine |
+| Event or collection exceeds its resource limit | `event-too-large` | Quarantine |
 | Two revisions supersede one base concurrently | `conflicting-revision` | Keep last uncontested projection; require resolution |
 | Resolution omits one sibling or chooses an external ID | `invalid-resolution` | Quarantine |
 | Concurrent resolutions choose different branches | `conflicting-resolution` | Keep last uncontested projection; require superseding resolution |

@@ -1,7 +1,146 @@
+import { parseEvent } from "./events.js";
+
 export function cents(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) throw new Error("Enter an amount greater than zero.");
   return Math.round(number * 100);
+}
+
+function eventEntries(eventsById) {
+  if (eventsById instanceof Map) return [...eventsById.entries()];
+  if (eventsById && typeof eventsById === "object" && !Array.isArray(eventsById)) return Object.entries(eventsById);
+  throw new TypeError("eventsById must be an object or Map");
+}
+
+function compareIds([left], [right]) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+function addBalance(balancesByParticipant, participantId, amount) {
+  const next = (balancesByParticipant.get(participantId) ?? 0) + amount;
+  if (!Number.isSafeInteger(next)) throw new RangeError("balance-overflow");
+  balancesByParticipant.set(participantId, next);
+}
+
+export function projectLedger(eventsById, context) {
+  if (!context
+    || typeof context !== "object"
+    || typeof context.groupId !== "string"
+    || typeof context.currency !== "string"
+    || typeof context.isEventAuthorized !== "function") throw new TypeError("invalid-projection-context");
+
+  const entries = eventEntries(eventsById).sort(compareIds);
+  const balancesByParticipant = new Map();
+  const effective = [];
+  const pending = [];
+  const quarantined = [];
+  const unsupported = [];
+  const parsedEntries = [];
+
+  for (const [id, rawEvent] of entries) {
+    const parsed = parseEvent(rawEvent);
+    if (!parsed.ok) {
+      const diagnostic = { id, reason: parsed.reason };
+      if (parsed.reason === "unsupported-version" || parsed.reason === "unsupported-event-type") unsupported.push(diagnostic);
+      else quarantined.push(diagnostic);
+      continue;
+    }
+    if (id !== parsed.event.id) {
+      quarantined.push({ id, reason: "event-id-mismatch" });
+      continue;
+    }
+    if (parsed.event.groupId !== context.groupId) {
+      quarantined.push({ id, reason: "group-mismatch" });
+      continue;
+    }
+    if (Object.hasOwn(parsed.event.payload, "currency")
+      && parsed.event.payload.currency !== context.currency) {
+      quarantined.push({ id, reason: "currency-mismatch" });
+      continue;
+    }
+    let authorized = false;
+    try {
+      authorized = context.isEventAuthorized(structuredClone(parsed.event)) === true;
+    } catch {
+      authorized = false;
+    }
+    if (!authorized) {
+      quarantined.push({ id, reason: "unauthenticated" });
+      continue;
+    }
+    parsedEntries.push([id, parsed.event]);
+  }
+
+  const eventsByValidId = new Map(parsedEntries);
+  const dependentsById = new Map(parsedEntries.map(([id]) => [id, []]));
+  const blockedByMissing = new Set();
+  for (const [id, event] of parsedEntries) {
+    for (const dependencyId of event.dependsOn) {
+      if (eventsByValidId.has(dependencyId)) dependentsById.get(dependencyId).push(id);
+      else blockedByMissing.add(id);
+    }
+  }
+
+  const blockedQueue = [...blockedByMissing];
+  for (let index = 0; index < blockedQueue.length; index++) {
+    for (const dependentId of dependentsById.get(blockedQueue[index]) ?? []) {
+      if (!blockedByMissing.has(dependentId)) {
+        blockedByMissing.add(dependentId);
+        blockedQueue.push(dependentId);
+      }
+    }
+  }
+
+  const unresolvedDependencies = new Map();
+  const readyQueue = [];
+  for (const [id, event] of parsedEntries) {
+    if (blockedByMissing.has(id)) continue;
+    const count = event.dependsOn.length;
+    unresolvedDependencies.set(id, count);
+    if (count === 0) readyQueue.push(id);
+  }
+
+  const readyEventIds = new Set();
+  for (let index = 0; index < readyQueue.length; index++) {
+    const id = readyQueue[index];
+    readyEventIds.add(id);
+    for (const dependentId of dependentsById.get(id)) {
+      if (blockedByMissing.has(dependentId)) continue;
+      const remaining = unresolvedDependencies.get(dependentId) - 1;
+      unresolvedDependencies.set(dependentId, remaining);
+      if (remaining === 0) readyQueue.push(dependentId);
+    }
+  }
+
+  const cyclicEventIds = new Set();
+  for (const [id] of parsedEntries) {
+    if (!blockedByMissing.has(id) && !readyEventIds.has(id)) {
+      cyclicEventIds.add(id);
+      quarantined.push({ id, reason: "cyclic-dependency" });
+    }
+  }
+
+  for (const [id, event] of parsedEntries) {
+    if (blockedByMissing.has(id)) {
+      const missingDependencyIds = event.dependsOn.filter((dependencyId) => !readyEventIds.has(dependencyId));
+      pending.push({ event, reason: "missing-dependency", missingDependencyIds });
+      continue;
+    }
+    if (cyclicEventIds.has(id)) continue;
+    if (event.type !== "expense-created") continue;
+
+    addBalance(balancesByParticipant, event.payload.payerId, event.payload.amount);
+    for (const split of event.payload.splits) addBalance(balancesByParticipant, split.participantId, -split.amount);
+    effective.push(event);
+  }
+
+  const balances = Object.fromEntries([...balancesByParticipant.entries()].sort(compareIds));
+  const total = Object.values(balances).reduce((sum, balance) => sum + BigInt(balance), 0n);
+  if (total !== 0n) throw new Error("non-zero-sum");
+
+  return { balances, effective, pending, quarantined, unsupported, readOnly: unsupported.length > 0 };
 }
 
 export function formatCents(value, currency = "USD") {

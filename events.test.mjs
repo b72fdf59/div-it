@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseEvent } from "./src/events.js";
+import { EVENT_TYPES, parseEvent } from "./src/events.js";
 
 const ids = {
   event: "11111111-1111-4111-8111-111111111111",
@@ -80,10 +80,9 @@ test("returns stable reasons for unsupported and malformed envelopes", () => {
   assert.equal(reasonFor("{"), "invalid-json");
 });
 
-test("validates dependency references and reports missing dependencies", () => {
+test("validates dependency references without event-set state", () => {
   const revision = envelope("expense-revised", { ...createdPayload, supersedesEventId: ids.dependency }, { dependsOn: [ids.dependency] });
-  assert.equal(reasonFor(revision, { knownEventIds: new Set() }), "missing-dependency");
-  assert.equal(parseEvent(revision, { knownEventIds: new Set([ids.dependency]) }).ok, true);
+  assert.equal(parseEvent(revision).ok, true);
   assert.equal(reasonFor({ ...revision, dependsOn: [] }), "invalid-reference");
   assert.equal(reasonFor({ ...revision, dependsOn: [ids.dependency, ids.dependency] }), "invalid-reference");
 });
@@ -104,4 +103,45 @@ test("does not mutate object input", () => {
   const before = structuredClone(input);
   parseEvent(input);
   assert.deepEqual(input, before);
+});
+
+test("does not expose a mutable event-type registry", () => {
+  assert.equal(Object.isFrozen(EVENT_TYPES), true);
+  assert.throws(() => EVENT_TYPES.push("forged"), TypeError);
+  assert.equal(reasonFor(envelope("forged", {})), "unsupported-event-type");
+});
+
+test("rejects events that exceed mobile-safe resource limits", () => {
+  assert.equal(reasonFor(envelope("expense-created", createdPayload, { signature: "a".repeat(513) })), "event-too-large");
+  assert.equal(reasonFor(envelope("expense-created", createdPayload, { createdAt: "2026-09-05T10:00:00.1234567890Z" })), "event-too-large");
+
+  const oversizedSplits = Array.from({ length: 257 }, (_, index) => ({ participantId: `participant-${index}`, amount: 1 }));
+  assert.equal(reasonFor(envelope("expense-created", { ...createdPayload, amount: 257, splits: oversizedSplits })), "event-too-large");
+
+  const encoded = JSON.stringify(envelope("expense-created", createdPayload)).padEnd(65_537, " ");
+  assert.equal(reasonFor(encoded), "event-too-large");
+
+  const oversizedObject = envelope("expense-created", {
+    ...createdPayload,
+    amount: 256,
+    splits: Array.from({ length: 256 }, (_, index) => ({ participantId: `${index}-${"😀".repeat(120)}`, amount: 1 }))
+  });
+  assert.equal(reasonFor(oversizedObject), "event-too-large");
+
+  const failOnTraversal = new Proxy(Array(257), {
+    get(target, property, receiver) {
+      if (property === "every") throw new Error("oversized collection was traversed");
+      return Reflect.get(target, property, receiver);
+    }
+  });
+  assert.equal(reasonFor(envelope("expense-created", createdPayload, { dependsOn: failOnTraversal })), "event-too-large");
+
+  const resolution = envelope("conflict-resolved", {
+    resolutionId: ids.expense,
+    expenseId: ids.group,
+    resolvesEventIds: failOnTraversal,
+    chosenEventId: ids.dependency,
+    supersedesResolutionEventIds: []
+  });
+  assert.equal(reasonFor(resolution), "event-too-large");
 });
