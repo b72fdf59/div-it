@@ -46,7 +46,8 @@ function permutations(values) {
 test("projects created expenses independently of insertion order", () => {
   const expected = {
     balances: { alice: 300, bob: 200, carol: -500 },
-    effective: [dinner, taxi]
+    effective: [dinner, taxi],
+    pending: []
   };
 
   for (const ordered of permutations([dinner, taxi])) {
@@ -73,15 +74,34 @@ test("does not mutate event input or expose references to it", () => {
 test("always returns zero-sum balances", () => {
   const { balances } = projectLedger({ [dinner.id]: dinner, [taxi.id]: taxi }, projectionContext);
   assert.equal(Object.values(balances).reduce((sum, balance) => sum + balance, 0), 0);
-  assert.deepEqual(projectLedger({}, projectionContext), { balances: {}, effective: [] });
+  assert.deepEqual(projectLedger({}, projectionContext), { balances: {}, effective: [], pending: [] });
 });
 
-test("rejects events with missing dependencies", () => {
+test("keeps missing-dependency events pending without blocking valid balances", () => {
   const dependent = { ...dinner, dependsOn: ["99999999-9999-4999-8999-999999999999"] };
-  assert.throws(
-    () => projectLedger({ [dependent.id]: dependent }, projectionContext),
-    { name: "TypeError", message: "missing-dependency" }
-  );
+  const result = projectLedger({ [dependent.id]: dependent, [taxi.id]: taxi }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: -500, bob: 1000, carol: -500 });
+  assert.deepEqual(result.effective, [taxi]);
+  assert.deepEqual(result.pending, [{
+    event: dependent,
+    reason: "missing-dependency",
+    missingDependencyIds: ["99999999-9999-4999-8999-999999999999"]
+  }]);
+});
+
+test("keeps transitive missing dependencies pending", () => {
+  const missingId = "99999999-9999-4999-8999-999999999999";
+  const first = { ...dinner, dependsOn: [missingId] };
+  const second = { ...taxi, dependsOn: [first.id] };
+  const result = projectLedger({ [first.id]: first, [second.id]: second }, projectionContext);
+
+  assert.deepEqual(result.balances, {});
+  assert.deepEqual(result.effective, []);
+  assert.deepEqual(result.pending.map(({ event, missingDependencyIds }) => ({ id: event.id, missingDependencyIds })), [
+    { id: first.id, missingDependencyIds: [missingId] },
+    { id: second.id, missingDependencyIds: [first.id] }
+  ]);
 });
 
 test("rejects events outside the trusted group and currency", () => {

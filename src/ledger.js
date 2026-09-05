@@ -31,20 +31,41 @@ export function projectLedger(eventsById, context) {
     || typeof context.currency !== "string") throw new TypeError("invalid-projection-context");
 
   const entries = eventEntries(eventsById).sort(compareIds);
-  const knownEventIds = new Set(entries.map(([id]) => id));
   const balancesByParticipant = new Map();
   const effective = [];
+  const pending = [];
+  const parsedEntries = [];
 
   for (const [id, rawEvent] of entries) {
-    const parsed = parseEvent(rawEvent, { knownEventIds });
+    const parsed = parseEvent(rawEvent);
     if (!parsed.ok) throw new TypeError(parsed.reason);
     if (id !== parsed.event.id) throw new TypeError("event-id-mismatch");
     if (parsed.event.groupId !== context.groupId) throw new TypeError("group-mismatch");
     if (Object.hasOwn(parsed.event.payload, "currency")
       && parsed.event.payload.currency !== context.currency) throw new TypeError("currency-mismatch");
-    if (parsed.event.type !== "expense-created") continue;
+    parsedEntries.push([id, parsed.event]);
+  }
 
-    const event = parsed.event;
+  const readyEventIds = new Set();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [id, event] of parsedEntries) {
+      if (!readyEventIds.has(id) && event.dependsOn.every((dependencyId) => readyEventIds.has(dependencyId))) {
+        readyEventIds.add(id);
+        changed = true;
+      }
+    }
+  }
+
+  for (const [id, event] of parsedEntries) {
+    if (!readyEventIds.has(id)) {
+      const missingDependencyIds = event.dependsOn.filter((dependencyId) => !readyEventIds.has(dependencyId));
+      pending.push({ event, reason: "missing-dependency", missingDependencyIds });
+      continue;
+    }
+    if (event.type !== "expense-created") continue;
+
     addBalance(balancesByParticipant, event.payload.payerId, event.payload.amount);
     for (const split of event.payload.splits) addBalance(balancesByParticipant, split.participantId, -split.amount);
     effective.push(event);
@@ -54,7 +75,7 @@ export function projectLedger(eventsById, context) {
   const total = Object.values(balances).reduce((sum, balance) => sum + BigInt(balance), 0n);
   if (total !== 0n) throw new Error("non-zero-sum");
 
-  return { balances, effective };
+  return { balances, effective, pending };
 }
 
 export function formatCents(value, currency = "USD") {

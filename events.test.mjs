@@ -111,3 +111,21 @@ test("does not expose a mutable event-type registry", () => {
   assert.throws(() => EVENT_TYPES.push("forged"), TypeError);
   assert.equal(reasonFor(envelope("forged", {})), "unsupported-event-type");
 });
+
+test("rejects events that exceed mobile-safe resource limits", () => {
+  assert.equal(reasonFor(envelope("expense-created", createdPayload, { signature: "a".repeat(513) })), "event-too-large");
+  assert.equal(reasonFor(envelope("expense-created", createdPayload, { createdAt: "2026-09-05T10:00:00.1234567890Z" })), "event-too-large");
+
+  const oversizedSplits = Array.from({ length: 257 }, (_, index) => ({ participantId: `participant-${index}`, amount: 1 }));
+  assert.equal(reasonFor(envelope("expense-created", { ...createdPayload, amount: 257, splits: oversizedSplits })), "event-too-large");
+
+  const encoded = JSON.stringify(envelope("expense-created", createdPayload)).padEnd(65_537, " ");
+  assert.equal(reasonFor(encoded), "event-too-large");
+
+  const oversizedObject = envelope("expense-created", {
+    ...createdPayload,
+    amount: 256,
+    splits: Array.from({ length: 256 }, (_, index) => ({ participantId: `${index}-${"😀".repeat(120)}`, amount: 1 }))
+  });
+  assert.equal(reasonFor(oversizedObject), "event-too-large");
+});
