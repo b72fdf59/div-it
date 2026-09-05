@@ -91,6 +91,8 @@ All money values are integer minor units, never floating-point amounts. `currenc
 
 `expenseId` is the stable logical expense identity. `description` is trimmed, non-empty, and bounded to 500 Unicode characters. `amount` and every split amount are positive safe integers. Split participant IDs are unique and their amounts must sum exactly to `amount`. The payer may be included in the split and pays only that participant's share.
 
+Exactly one logical `expense-created` payload may introduce an `expenseId`. Repeated creator events with different envelope IDs but identical payloads are semantic duplicates: their event IDs are aliases for dependency purposes and the expense contributes once. If creator payloads for one `expenseId` differ, every creator is quarantined as `logical-id-content-collision` and dependent expense events cannot become effective.
+
 ### `expense-revised`
 
 ```json
@@ -147,7 +149,9 @@ All money values are integer minor units, never floating-point amounts. `currenc
 }
 ```
 
-`reversesEventId` must be in `dependsOn`, must identify one `settlement-recorded` event, and may be reversed only once. The reversal has no independent amount; it exactly neutralizes the named settlement. `settlementId` must match the referenced settlement.
+`reversesEventId` must be in `dependsOn` and must identify one `settlement-recorded` event. The reversal has no independent amount; it exactly neutralizes the named settlement. `settlementId` must match the referenced settlement.
+
+One or more valid reversals of the same settlement are financially equivalent and neutralize that settlement exactly once. Concurrent reversal events remain in the audit history, including their distinct authors and reasons, but redundant reversals are reported as `duplicate-reversal-ignored` and never apply another inverse contribution. This rule depends only on the complete event set, not arrival order.
 
 ### `opening-balances-imported`
 
@@ -165,6 +169,8 @@ All money values are integer minor units, never floating-point amounts. `currenc
 
 An opening balance is a signed participant balance: positive means the participant is owed money; negative means the participant owes money. Each participant appears at most once, every amount is an integer safe value, and the sum must be exactly zero. The import records only the mapped opening balances; it never invents historical expenses. Any source-file fingerprint is metadata outside this version-one payload until its digest algorithm is selected.
 
+`importId` identifies one logical import. Repeated import events with identical payloads contribute once. Different payloads using the same `importId` are quarantined as `logical-id-content-collision`.
+
 ### `conflict-resolved`
 
 ```json
@@ -176,11 +182,16 @@ An opening balance is a signed participant balance: positive means the participa
     "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
   ],
   "chosenEventId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "supersedesResolutionEventIds": [],
   "note": "Confirmed the receipt total with both members"
 }
 ```
 
 `resolvesEventIds` contains at least two unique sibling revision event IDs, is sorted lexicographically, and every ID is in `dependsOn`. `chosenEventId` must be one of those branches. All resolved events must target the same `expenseId`; a resolution cannot silently introduce a new payload. Any current member may author a resolution under membership rules. Rejected branches remain in audit history.
+
+`supersedesResolutionEventIds` is a sorted array of unique `conflict-resolved` event IDs and every ID it contains must also be in `dependsOn`. It is empty for the first attempt to resolve a revision fork. If concurrent resolutions of the same complete `resolvesEventIds` set choose different branches, none wins and the last uncontested expense remains effective. A later resolution must name every competing resolution in `supersedesResolutionEventIds` and choose one of the original branches. Concurrent resolutions that choose the same branch are semantically equivalent and make that branch effective once. Resolution attempts that name different revision sets do not resolve one another.
+
+`resolutionId` identifies one logical resolution attempt. Repeated resolution events with identical payloads are semantic duplicates. Different payloads using the same `resolutionId` are quarantined as `logical-id-content-collision`.
 
 ## Projection and delivery rules
 
@@ -200,13 +211,15 @@ Invalid, unauthenticated, and invariant-breaking events are quarantined. Missing
 - If one ID appears with two or more distinct signed contents, it is an `id-content-collision`. No variant with that ID is effective, regardless of arrival order. All variants remain available for diagnostics and audit.
 - A duplicate dependency or duplicate split participant is invalid input, not a second application.
 
+Logical identifiers have an additional collision rule. `expenseId` identifies one expense chain, `settlementId` one settlement and its reversals, `importId` one opening-balance import, and `resolutionId` one resolution attempt. Events that legitimately revise, void, or reverse an existing logical object reuse its logical ID and reference its predecessor. Two creator events with the same logical ID and identical type-specific payload are semantic duplicates and contribute once; their envelope IDs are aliases for dependency checks. If those creator payloads differ, all competing creators are quarantined as `logical-id-content-collision`. This classification is based on the complete set and is independent of arrival order.
+
 ### Reordering and missing dependencies
 
 Independent events may arrive in any order. The projector operates on the complete ID-keyed set, not insertion order. A pending event is reconsidered whenever its dependency set changes. Adding a previously missing dependency can reclassify an event from pending to effective, conflicting, or quarantined deterministically.
 
 ### Revisions and concurrent branches
 
-An uncontested revision is effective only when its predecessor is valid and no sibling revision exists for that predecessor. If two valid revisions supersede the same base, neither wins by timestamp, insertion order, Automerge value, or device ID. The last uncontested event before the fork remains effective while the fork is unresolved, and the branches are reported as conflicting. A valid `conflict-resolved` event that names every sibling makes exactly its `chosenEventId` branch effective. Rejected branches remain auditable.
+An uncontested revision is effective only when its predecessor is valid and no sibling revision exists for that predecessor. If two valid revisions supersede the same base, neither wins by timestamp, insertion order, Automerge value, or device ID. The last uncontested event before the fork remains effective while the fork is unresolved, and the branches are reported as conflicting. A valid, uncontested `conflict-resolved` event that names every sibling makes exactly its `chosenEventId` branch effective. Conflicting resolution attempts keep the pre-fork expense effective until another resolution explicitly supersedes every competing attempt. Rejected branches and resolution attempts remain auditable.
 
 ### Zero-sum invariant
 
@@ -240,13 +253,15 @@ These examples describe the minimum diagnosis surface for validators and tests:
 | `dependsOn` names an absent event | `missing-dependency` | Pending |
 | Revision points to a different expense | `invalid-reference` | Quarantine |
 | Reversal points to a non-settlement | `invalid-reference` | Quarantine |
-| Reversal of an already reversed settlement | `already-reversed` | Quarantine |
+| Concurrent or later reversal of an already reversed settlement | `duplicate-reversal-ignored` | Preserve; neutralize once |
 | Two payloads use the same event ID | `id-content-collision` | Quarantine all variants |
+| Different creator payloads reuse one logical ID | `logical-id-content-collision` | Quarantine all competing creators |
 | Event type is not one of the seven supported types | `unsupported-event-type` | Preserve; read-only if money-affecting |
 | Schema or protocol version is unsupported | `unsupported-version` | Preserve; read-only if money-affecting |
 | Signature is absent or fails verification | `unauthenticated` | Quarantine |
 | Two revisions supersede one base concurrently | `conflicting-revision` | Keep last uncontested projection; require resolution |
 | Resolution omits one sibling or chooses an external ID | `invalid-resolution` | Quarantine |
+| Concurrent resolutions choose different branches | `conflicting-resolution` | Keep last uncontested projection; require superseding resolution |
 
 ## Consequences
 
