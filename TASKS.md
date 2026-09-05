@@ -112,7 +112,7 @@ Status meanings:
 
 ### DIV-007 — Extract approved design tokens
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-002
 - Deliverable: Move the approved calm dark/light palette, typography, spacing, radii, and semantic colors into production CSS variables. Do not change information architecture yet.
 - Source: docs/design/calm-mobile-mock.html
