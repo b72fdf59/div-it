@@ -66,7 +66,7 @@ Status meanings:
 
 ### DIV-003 — Specify the version-one event format
 
-- Status: REVIEW
+- Status: DONE
 - Depends on: none
 - Deliverable: Draft an ADR that turns the roadmap event contract into exact envelope and payload schemas. Include event IDs, schema/protocol versions, participant/device attribution fields, dependency references, and canonical signed-content requirements. Cryptographic algorithm selection remains deferred.
 - Likely files: docs/adr/0001-event-format.md
@@ -127,7 +127,7 @@ Status meanings:
 
 ### DIV-010 — Validate event envelopes
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-003, DIV-004
 - Deliverable: Implement pure parsing and validation for the approved structural event envelope. Signature verification is deferred to the identity phase.
 - Likely files: new src/events.js and focused tests
