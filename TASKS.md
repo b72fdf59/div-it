@@ -127,7 +127,7 @@ Status meanings:
 
 ### DIV-010 — Validate event envelopes
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-003, DIV-004
 - Deliverable: Implement pure parsing and validation for the approved structural event envelope. Signature verification is deferred to the identity phase.
 - Likely files: new src/events.js and focused tests
@@ -138,7 +138,7 @@ Status meanings:
 
 ### DIV-011 — Project created expenses
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-010
 - Deliverable: Add a pure projectLedger(eventsById) path for expense-created events.
 - Likely files: src/ledger.js, event/projector tests
