@@ -90,7 +90,7 @@ Status meanings:
 
 ### DIV-005 — Protect add-expense behavior in a browser
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-002
 - Deliverable: Add two people, submit an equal-split expense, and assert activity and balances through the browser.
 - Likely files: browser test only; production files only if the regression reappears
@@ -101,7 +101,7 @@ Status meanings:
 
 ### DIV-006 — Test exact split, reload, and backup round-trip
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-005
 - Deliverable: Extend browser coverage for exact splits, persistence after reload, JSON export, and import into a clean context.
 - Likely files: browser tests and narrow test helpers
