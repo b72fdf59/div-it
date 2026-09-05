@@ -7,8 +7,12 @@ export function cents(value) {
 }
 
 function eventEntries(eventsById) {
-  if (eventsById instanceof Map) return [...eventsById.entries()];
-  if (eventsById && typeof eventsById === "object" && !Array.isArray(eventsById)) return Object.entries(eventsById);
+  const entries = eventsById instanceof Map
+    ? [...eventsById.entries()]
+    : eventsById && typeof eventsById === "object" && !Array.isArray(eventsById) ? Object.entries(eventsById) : null;
+  if (entries) return entries.flatMap(([id, value]) => Array.isArray(value)
+    ? value.map((variant) => [id, variant])
+    : [[id, value]]);
   throw new TypeError("eventsById must be an object or Map");
 }
 
@@ -24,6 +28,21 @@ function addBalance(balancesByParticipant, participantId, amount) {
   balancesByParticipant.set(participantId, next);
 }
 
+function canonicalJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+}
+
+function signedContent(event) {
+  const { signature, ...unsigned } = event;
+  return canonicalJson(unsigned);
+}
+
+function fullEventContent(event) {
+  return canonicalJson(event);
+}
+
 export function projectLedger(eventsById, context) {
   if (!context
     || typeof context !== "object"
@@ -37,7 +56,9 @@ export function projectLedger(eventsById, context) {
   const pending = [];
   const quarantined = [];
   const unsupported = [];
+  const duplicates = [];
   const parsedEntries = [];
+  const variantsById = new Map();
 
   for (const [id, rawEvent] of entries) {
     const parsed = parseEvent(rawEvent);
@@ -60,17 +81,41 @@ export function projectLedger(eventsById, context) {
       quarantined.push({ id, reason: "currency-mismatch" });
       continue;
     }
-    let authorized = false;
-    try {
-      authorized = context.isEventAuthorized(structuredClone(parsed.event)) === true;
-    } catch {
-      authorized = false;
+    if (!variantsById.has(id)) variantsById.set(id, []);
+    variantsById.get(id).push(parsed.event);
+  }
+
+  for (const [id, variants] of [...variantsById.entries()].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) {
+    const authorizedVariants = [];
+    for (const event of variants) {
+      let authorized = false;
+      try {
+        authorized = context.isEventAuthorized(structuredClone(event)) === true;
+      } catch {
+        authorized = false;
+      }
+      if (authorized) authorizedVariants.push(event);
+      else quarantined.push({ id, reason: "unauthenticated" });
     }
-    if (!authorized) {
-      quarantined.push({ id, reason: "unauthenticated" });
+    const contentGroups = new Map();
+    for (const event of authorizedVariants) {
+      const content = signedContent(event);
+      if (!contentGroups.has(content)) contentGroups.set(content, []);
+      contentGroups.get(content).push(event);
+    }
+    if (contentGroups.size > 1) {
+      quarantined.push({ id, reason: "id-content-collision" });
       continue;
     }
-    parsedEntries.push([id, parsed.event]);
+    if (authorizedVariants.length === 0) continue;
+
+    const selected = [...authorizedVariants].sort((left, right) => {
+      const leftContent = fullEventContent(left);
+      const rightContent = fullEventContent(right);
+      return leftContent < rightContent ? -1 : leftContent > rightContent ? 1 : 0;
+    })[0];
+    if (authorizedVariants.length > 1) duplicates.push({ id, reason: "duplicate-ignored", count: authorizedVariants.length - 1 });
+    parsedEntries.push([id, selected]);
   }
 
   const eventsByValidId = new Map(parsedEntries);
@@ -140,7 +185,7 @@ export function projectLedger(eventsById, context) {
   const total = Object.values(balances).reduce((sum, balance) => sum + BigInt(balance), 0n);
   if (total !== 0n) throw new Error("non-zero-sum");
 
-  return { balances, effective, pending, quarantined, unsupported, readOnly: unsupported.length > 0 };
+  return { balances, effective, pending, quarantined, unsupported, readOnly: unsupported.length > 0, duplicates };
 }
 
 export function formatCents(value, currency = "USD") {
