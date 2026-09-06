@@ -197,6 +197,46 @@ test("applies exact duplicate event content once", () => {
   assert.deepEqual(result.duplicates, [{ id: dinner.id, reason: "duplicate-ignored", count: 1 }]);
 });
 
+test("applies semantic expense duplicates once and resolves their dependency aliases", () => {
+  const alias = { ...structuredClone(dinner), id: "21111111-1111-4111-8111-111111111112", signature: "signature-expense-alias" };
+  const revision = revisedExpense({
+    id: "51111111-1111-4111-8111-111111111111",
+    supersedesEventId: alias.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 2400,
+    splits: [{ participantId: "alice", amount: 1440 }, { participantId: "bob", amount: 960 }]
+  });
+  const result = projectLedger({ [revision.id]: revision, [alias.id]: alias, [dinner.id]: dinner }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 960, bob: -960 });
+  assert.deepEqual(result.effective.map((event) => event.id), [revision.id]);
+  assert.deepEqual(result.duplicates, [{ id: alias.id, reason: "duplicate-ignored", count: 1 }]);
+});
+
+test("quarantines conflicting logical expense creators and blocks their dependents", () => {
+  const collision = expense({
+    id: "21111111-1111-4111-8111-111111111112",
+    expenseId: dinner.payload.expenseId,
+    description: "Different dinner",
+    payerId: "alice",
+    amount: 3000,
+    splits: [{ participantId: "alice", amount: 1800 }, { participantId: "bob", amount: 1200 }]
+  });
+  const revision = revisedExpense({
+    id: "51111111-1111-4111-8111-111111111111",
+    supersedesEventId: dinner.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 2400,
+    splits: [{ participantId: "alice", amount: 1440 }, { participantId: "bob", amount: 960 }]
+  });
+  const result = projectLedger({ [revision.id]: revision, [collision.id]: collision, [dinner.id]: dinner, [taxi.id]: taxi }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: -500, bob: 1000, carol: -500 });
+  assert.deepEqual(result.effective.map((event) => event.id), [taxi.id]);
+  assert.deepEqual(result.pending.map(({ event }) => event.id), [revision.id]);
+  assert.deepEqual(result.quarantined, [dinner.id, collision.id].sort().map((id) => ({ id, reason: "logical-id-content-collision" })));
+});
+
 test("does not let an unauthorized duplicate shadow an authorized one", () => {
   const unauthorized = { ...dinner, signature: "bad" };
   const context = { ...projectionContext, isEventAuthorized: (event) => event.signature !== "bad" };
@@ -303,6 +343,30 @@ test("quarantines reversals with invalid targets or settlement IDs", () => {
     { id: wrongTarget.id, reason: "invalid-reference" },
     { id: wrongSettlement.id, reason: "invalid-reference" }
   ]);
+});
+
+test("quarantines settlements that reuse one logical ID with different content", () => {
+  const first = settlement({
+    id: "55555555-5555-4555-8555-555555555555",
+    settlementId: "65555555-5555-4555-8555-555555555555",
+    fromParticipantId: "bob",
+    toParticipantId: "alice",
+    amount: 800
+  });
+  const second = settlement({
+    id: "75555555-5555-4555-8555-555555555555",
+    settlementId: first.payload.settlementId,
+    fromParticipantId: "alice",
+    toParticipantId: "bob",
+    amount: 300
+  });
+  const undo = reversal({ id: "85555555-5555-4555-8555-555555555555", settlementId: first.payload.settlementId, reversesEventId: first.id });
+  const result = projectLedger({ [undo.id]: undo, [second.id]: second, [first.id]: first }, projectionContext);
+
+  assert.deepEqual(result.balances, {});
+  assert.deepEqual(result.effective, []);
+  assert.deepEqual(result.pending.map(({ event }) => event.id), [undo.id]);
+  assert.deepEqual(result.quarantined, [first.id, second.id].map((id) => ({ id, reason: "logical-id-content-collision" })));
 });
 
 test("projects only the latest uncontested expense revision", () => {
@@ -509,6 +573,58 @@ test("requires a later resolution to supersede competing resolution attempts", (
   assert.deepEqual(resolved.balances, { alice: 960, bob: -960 });
   assert.deepEqual(resolved.effective.map((event) => event.id), [firstBranch.id, finalResolution.id]);
   assert.deepEqual(resolved.quarantined, []);
+});
+
+test("does not resolve a disputed choice by superseding only one competing attempt", () => {
+  const firstBranch = revisedExpense({
+    id: "55555555-5555-4555-8555-555555555555",
+    supersedesEventId: dinner.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 2400,
+    splits: [{ participantId: "alice", amount: 1440 }, { participantId: "bob", amount: 960 }]
+  });
+  const secondBranch = revisedExpense({
+    id: "65555555-5555-4555-8555-555555555555",
+    supersedesEventId: dinner.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 3000,
+    splits: [{ participantId: "alice", amount: 1800 }, { participantId: "bob", amount: 1200 }]
+  });
+  const firstResolution = conflictResolution({
+    id: "75555555-5555-4555-8555-555555555555",
+    expenseId: dinner.payload.expenseId,
+    resolvesEventIds: [firstBranch.id, secondBranch.id],
+    chosenEventId: firstBranch.id
+  });
+  const secondResolution = conflictResolution({
+    id: "85555555-5555-4555-8555-555555555555",
+    expenseId: dinner.payload.expenseId,
+    resolvesEventIds: [firstBranch.id, secondBranch.id],
+    chosenEventId: secondBranch.id
+  });
+  const partialResolution = conflictResolution({
+    id: "95555555-5555-4555-8555-555555555555",
+    expenseId: dinner.payload.expenseId,
+    resolvesEventIds: [firstBranch.id, secondBranch.id],
+    chosenEventId: secondBranch.id,
+    supersedesResolutionEventIds: [firstResolution.id]
+  });
+  const result = projectLedger(Object.fromEntries([
+    dinner,
+    firstBranch,
+    secondBranch,
+    firstResolution,
+    secondResolution,
+    partialResolution
+  ].map((event) => [event.id, event])), projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 800, bob: -800 });
+  assert.deepEqual(result.effective.map((event) => event.id), [dinner.id]);
+  assert.deepEqual(result.conflicting, [
+    { id: firstBranch.id, reason: "conflicting-revision" },
+    { id: secondBranch.id, reason: "conflicting-revision" },
+    ...[secondResolution.id, partialResolution.id].sort().map((id) => ({ id, reason: "conflicting-resolution" }))
+  ]);
 });
 
 test("rejects events outside the trusted group and currency", () => {
