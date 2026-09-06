@@ -181,7 +181,7 @@ Status meanings:
 
 ### DIV-015 — Detect and resolve concurrent revisions
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-014
 - Deliverable: Detect sibling revisions of one base and implement conflict-resolved semantics.
 - Acceptance:
@@ -192,7 +192,7 @@ Status meanings:
 
 ### DIV-016 — Return structured projection diagnostics
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-015
 - Deliverable: Return separate effective, pending, conflicting, quarantined, and unsupported collections with stable reason codes.
 - Acceptance:

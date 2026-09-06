@@ -80,6 +80,22 @@ function voidedExpense({ id, supersedesEventId, expenseId, dependsOn = [supersed
   };
 }
 
+function conflictResolution({ id, expenseId, resolvesEventIds, chosenEventId, supersedesResolutionEventIds = [] }) {
+  const dependsOn = [...resolvesEventIds, ...supersedesResolutionEventIds].sort();
+  return {
+    id,
+    type: "conflict-resolved",
+    schemaVersion: 1,
+    protocolVersion: 1,
+    groupId,
+    author: { participantId: "alice", deviceId: "device-alice", keyId: "key-alice" },
+    createdAt: "2026-09-05T10:00:00.000Z",
+    dependsOn,
+    payload: { resolutionId: id, expenseId, resolvesEventIds, chosenEventId, supersedesResolutionEventIds },
+    signature: `signature-${id}`
+  };
+}
+
 const dinner = expense({
   id: "11111111-1111-4111-8111-111111111111",
   expenseId: "21111111-1111-4111-8111-111111111111",
@@ -353,6 +369,142 @@ test("diagnoses invalid revision and void references", () => {
     { id: wrongExpense.id, reason: "invalid-reference" },
     { id: wrongTarget.id, reason: "invalid-reference" }
   ]);
+});
+
+test("keeps the last uncontested expense effective during a revision conflict", () => {
+  const firstBranch = revisedExpense({
+    id: "55555555-5555-4555-8555-555555555555",
+    supersedesEventId: dinner.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 2400,
+    splits: [{ participantId: "alice", amount: 1440 }, { participantId: "bob", amount: 960 }]
+  });
+  const secondBranch = revisedExpense({
+    id: "65555555-5555-4555-8555-555555555555",
+    supersedesEventId: dinner.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 3000,
+    splits: [{ participantId: "alice", amount: 1800 }, { participantId: "bob", amount: 1200 }]
+  });
+  const result = projectLedger({ [secondBranch.id]: secondBranch, [dinner.id]: dinner, [firstBranch.id]: firstBranch }, projectionContext);
+  const reordered = projectLedger(new Map([[firstBranch.id, firstBranch], [secondBranch.id, secondBranch], [dinner.id, dinner]]), projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 800, bob: -800 });
+  assert.deepEqual(result.effective.map((event) => event.id), [dinner.id]);
+  assert.deepEqual(result.quarantined, [
+    { id: firstBranch.id, reason: "conflicting-revision" },
+    { id: secondBranch.id, reason: "conflicting-revision" }
+  ]);
+  assert.deepEqual(reordered, result);
+});
+
+test("applies a resolution to exactly one revision branch", () => {
+  const firstBranch = revisedExpense({
+    id: "55555555-5555-4555-8555-555555555555",
+    supersedesEventId: dinner.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 2400,
+    splits: [{ participantId: "alice", amount: 1440 }, { participantId: "bob", amount: 960 }]
+  });
+  const secondBranch = revisedExpense({
+    id: "65555555-5555-4555-8555-555555555555",
+    supersedesEventId: dinner.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 3000,
+    splits: [{ participantId: "alice", amount: 1800 }, { participantId: "bob", amount: 1200 }]
+  });
+  const resolution = conflictResolution({
+    id: "75555555-5555-4555-8555-555555555555",
+    expenseId: dinner.payload.expenseId,
+    resolvesEventIds: [firstBranch.id, secondBranch.id],
+    chosenEventId: secondBranch.id
+  });
+  const result = projectLedger({ [resolution.id]: resolution, [firstBranch.id]: firstBranch, [dinner.id]: dinner, [secondBranch.id]: secondBranch }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 1200, bob: -1200 });
+  assert.deepEqual(result.effective.map((event) => event.id), [secondBranch.id, resolution.id]);
+  assert.deepEqual(result.quarantined, []);
+});
+
+test("does not accept a resolution for an incomplete or unrelated branch set", () => {
+  const firstBranch = revisedExpense({
+    id: "55555555-5555-4555-8555-555555555555",
+    supersedesEventId: dinner.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 2400,
+    splits: [{ participantId: "alice", amount: 1440 }, { participantId: "bob", amount: 960 }]
+  });
+  const secondBranch = revisedExpense({
+    id: "65555555-5555-4555-8555-555555555555",
+    supersedesEventId: dinner.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 3000,
+    splits: [{ participantId: "alice", amount: 1800 }, { participantId: "bob", amount: 1200 }]
+  });
+  const invalidResolution = conflictResolution({
+    id: "75555555-5555-4555-8555-555555555555",
+    expenseId: dinner.payload.expenseId,
+    resolvesEventIds: [taxi.id, firstBranch.id],
+    chosenEventId: firstBranch.id
+  });
+  const result = projectLedger({ [invalidResolution.id]: invalidResolution, [firstBranch.id]: firstBranch, [dinner.id]: dinner, [secondBranch.id]: secondBranch, [taxi.id]: taxi }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 300, bob: 200, carol: -500 });
+  assert.deepEqual(result.quarantined, [
+    { id: firstBranch.id, reason: "conflicting-revision" },
+    { id: secondBranch.id, reason: "conflicting-revision" },
+    { id: invalidResolution.id, reason: "invalid-resolution" }
+  ]);
+});
+
+test("requires a later resolution to supersede competing resolution attempts", () => {
+  const firstBranch = revisedExpense({
+    id: "55555555-5555-4555-8555-555555555555",
+    supersedesEventId: dinner.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 2400,
+    splits: [{ participantId: "alice", amount: 1440 }, { participantId: "bob", amount: 960 }]
+  });
+  const secondBranch = revisedExpense({
+    id: "65555555-5555-4555-8555-555555555555",
+    supersedesEventId: dinner.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 3000,
+    splits: [{ participantId: "alice", amount: 1800 }, { participantId: "bob", amount: 1200 }]
+  });
+  const firstResolution = conflictResolution({
+    id: "75555555-5555-4555-8555-555555555555",
+    expenseId: dinner.payload.expenseId,
+    resolvesEventIds: [firstBranch.id, secondBranch.id],
+    chosenEventId: firstBranch.id
+  });
+  const secondResolution = conflictResolution({
+    id: "85555555-5555-4555-8555-555555555555",
+    expenseId: dinner.payload.expenseId,
+    resolvesEventIds: [firstBranch.id, secondBranch.id],
+    chosenEventId: secondBranch.id
+  });
+  const finalResolution = conflictResolution({
+    id: "95555555-5555-4555-8555-555555555555",
+    expenseId: dinner.payload.expenseId,
+    resolvesEventIds: [firstBranch.id, secondBranch.id],
+    chosenEventId: firstBranch.id,
+    supersedesResolutionEventIds: [firstResolution.id, secondResolution.id]
+  });
+  const unresolved = projectLedger({ [dinner.id]: dinner, [firstBranch.id]: firstBranch, [secondBranch.id]: secondBranch, [firstResolution.id]: firstResolution, [secondResolution.id]: secondResolution }, projectionContext);
+  const resolved = projectLedger({ [finalResolution.id]: finalResolution, [secondResolution.id]: secondResolution, [dinner.id]: dinner, [firstBranch.id]: firstBranch, [secondBranch.id]: secondBranch, [firstResolution.id]: firstResolution }, projectionContext);
+
+  assert.deepEqual(unresolved.balances, { alice: 800, bob: -800 });
+  assert.deepEqual(unresolved.effective.map((event) => event.id), [dinner.id]);
+  assert.deepEqual(unresolved.quarantined, [
+    { id: firstBranch.id, reason: "conflicting-revision" },
+    { id: secondBranch.id, reason: "conflicting-revision" },
+    { id: firstResolution.id, reason: "conflicting-resolution" },
+    { id: secondResolution.id, reason: "conflicting-resolution" }
+  ]);
+  assert.deepEqual(resolved.balances, { alice: 960, bob: -960 });
+  assert.deepEqual(resolved.effective.map((event) => event.id), [firstBranch.id, finalResolution.id]);
+  assert.deepEqual(resolved.quarantined, []);
 });
 
 test("rejects events outside the trusted group and currency", () => {

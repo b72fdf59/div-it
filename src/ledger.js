@@ -205,25 +205,78 @@ export function projectLedger(eventsById, context) {
     }
   }
 
-  const conflictingExpenseEventIds = new Set();
-  const conflictQueue = [];
+  const conflictGroups = new Map();
   for (const [parentId, childIds] of childrenByParentId) {
     const validChildIds = childIds.filter((id) => !invalidExpenseEventIds.has(id));
-    if (validChildIds.length < 2) continue;
-    for (const childId of validChildIds) {
-      conflictingExpenseEventIds.add(childId);
-      conflictQueue.push(childId);
-      quarantined.push({ id: childId, reason: "conflicting-revision" });
-    }
     childrenByParentId.set(parentId, validChildIds);
+    if (validChildIds.length >= 2) conflictGroups.set(parentId, [...validChildIds].sort());
   }
-  for (let index = 0; index < conflictQueue.length; index++) {
-    for (const childId of childrenByParentId.get(conflictQueue[index]) ?? []) {
-      if (!invalidExpenseEventIds.has(childId) && !conflictingExpenseEventIds.has(childId)) {
-        conflictingExpenseEventIds.add(childId);
-        quarantined.push({ id: childId, reason: "conflicting-revision" });
-        conflictQueue.push(childId);
-      }
+
+  const sameIds = (left, right) => left.length === right.length && left.every((id, index) => id === right[index]);
+  const resolutionEventsById = new Map();
+  for (const [id, event] of parsedEntries) {
+    if (readyEventIds.has(id) && event.type === "conflict-resolved") resolutionEventsById.set(id, event);
+  }
+
+  const invalidResolutionEventIds = new Set();
+  const quarantineResolution = (id, reason = "invalid-resolution") => {
+    if (!invalidResolutionEventIds.has(id)) {
+      invalidResolutionEventIds.add(id);
+      quarantined.push({ id, reason });
+    }
+  };
+  const resolutionGroupById = new Map();
+  const resolutionGroups = new Map();
+  for (const [id, event] of resolutionEventsById) {
+    const match = [...conflictGroups.entries()].find(([, branchIds]) => sameIds(branchIds, event.payload.resolvesEventIds));
+    if (!match || !match[1].every((branchId) => expenseEventsById.get(branchId).payload.expenseId === event.payload.expenseId)) {
+      quarantineResolution(id);
+      continue;
+    }
+    const [parentId] = match;
+    resolutionGroupById.set(id, parentId);
+    if (!resolutionGroups.has(parentId)) resolutionGroups.set(parentId, []);
+    resolutionGroups.get(parentId).push(id);
+  }
+
+  for (const [id, event] of resolutionEventsById) {
+    if (invalidResolutionEventIds.has(id)) continue;
+    const parentId = resolutionGroupById.get(id);
+    if (event.payload.supersedesResolutionEventIds.some((resolutionId) => resolutionGroupById.get(resolutionId) !== parentId)) {
+      quarantineResolution(id);
+    }
+  }
+
+  const resolvedBranchByParentId = new Map();
+  const effectiveResolutionIds = new Set();
+  for (const [parentId, resolutionIds] of resolutionGroups) {
+    const validResolutionIds = resolutionIds.filter((id) => !invalidResolutionEventIds.has(id));
+    const supersededResolutionIds = new Set(validResolutionIds.flatMap((id) => resolutionEventsById.get(id).payload.supersedesResolutionEventIds));
+    const maximalResolutionIds = validResolutionIds.filter((id) => !supersededResolutionIds.has(id));
+    const chosenEventIds = new Set(maximalResolutionIds.map((id) => resolutionEventsById.get(id).payload.chosenEventId));
+    if (chosenEventIds.size === 1 && maximalResolutionIds.length > 0) {
+      resolvedBranchByParentId.set(parentId, [...chosenEventIds][0]);
+      effectiveResolutionIds.add([...maximalResolutionIds].sort()[0]);
+    } else {
+      for (const id of maximalResolutionIds) quarantineResolution(id, "conflicting-resolution");
+    }
+  }
+
+  const conflictingExpenseEventIds = new Set();
+  const markConflictingTree = (rootId, report) => {
+    const queue = [rootId];
+    for (let index = 0; index < queue.length; index++) {
+      const id = queue[index];
+      if (invalidExpenseEventIds.has(id) || conflictingExpenseEventIds.has(id)) continue;
+      conflictingExpenseEventIds.add(id);
+      if (report) quarantined.push({ id, reason: "conflicting-revision" });
+      queue.push(...(childrenByParentId.get(id) ?? []));
+    }
+  };
+  for (const [parentId, childIds] of conflictGroups) {
+    const chosenEventId = resolvedBranchByParentId.get(parentId);
+    for (const childId of childIds) {
+      if (chosenEventId === undefined || childId !== chosenEventId) markConflictingTree(childId, chosenEventId === undefined);
     }
   }
 
@@ -242,6 +295,10 @@ export function projectLedger(eventsById, context) {
       continue;
     }
     if (cyclicEventIds.has(id)) continue;
+    if (event.type === "conflict-resolved") {
+      if (effectiveResolutionIds.has(id)) effective.push(event);
+      continue;
+    }
     if (["expense-created", "expense-revised", "expense-voided"].includes(event.type)) {
       if (!activeExpenseEventIds.has(id)) continue;
       if (event.type === "expense-voided") {
@@ -282,6 +339,8 @@ export function projectLedger(eventsById, context) {
   const balances = Object.fromEntries([...balancesByParticipant.entries()].sort(compareIds));
   const total = Object.values(balances).reduce((sum, balance) => sum + BigInt(balance), 0n);
   if (total !== 0n) throw new Error("non-zero-sum");
+
+  quarantined.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : left.reason < right.reason ? -1 : left.reason > right.reason ? 1 : 0);
 
   return { balances, effective, pending, quarantined, unsupported, readOnly: unsupported.length > 0, duplicates, ignored };
 }
