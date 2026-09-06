@@ -50,6 +50,36 @@ function reversal({ id, settlementId, reversesEventId, dependsOn = [reversesEven
   };
 }
 
+function revisedExpense({ id, supersedesEventId, expenseId, amount, splits, description = "Revised dinner", dependsOn = [supersedesEventId] }) {
+  return {
+    id,
+    type: "expense-revised",
+    schemaVersion: 1,
+    protocolVersion: 1,
+    groupId,
+    author: { participantId: "alice", deviceId: "device-alice", keyId: "key-alice" },
+    createdAt: "2026-09-05T10:00:00.000Z",
+    dependsOn,
+    payload: { expenseId, supersedesEventId, description, currency: "USD", amount, payerId: "alice", splits },
+    signature: `signature-${id}`
+  };
+}
+
+function voidedExpense({ id, supersedesEventId, expenseId, dependsOn = [supersedesEventId] }) {
+  return {
+    id,
+    type: "expense-voided",
+    schemaVersion: 1,
+    protocolVersion: 1,
+    groupId,
+    author: { participantId: "alice", deviceId: "device-alice", keyId: "key-alice" },
+    createdAt: "2026-09-05T10:00:00.000Z",
+    dependsOn,
+    payload: { expenseId, supersedesEventId, reason: "Refunded" },
+    signature: `signature-${id}`
+  };
+}
+
 const dinner = expense({
   id: "11111111-1111-4111-8111-111111111111",
   expenseId: "21111111-1111-4111-8111-111111111111",
@@ -255,6 +285,73 @@ test("quarantines reversals with invalid targets or settlement IDs", () => {
   assert.deepEqual(result.quarantined, [
     { id: wrongTarget.id, reason: "invalid-reference" },
     { id: wrongSettlement.id, reason: "invalid-reference" }
+  ]);
+});
+
+test("projects only the latest uncontested expense revision", () => {
+  const revision = revisedExpense({
+    id: "55555555-5555-4555-8555-555555555555",
+    supersedesEventId: dinner.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 2400,
+    splits: [{ participantId: "alice", amount: 1440 }, { participantId: "bob", amount: 960 }]
+  });
+  const result = projectLedger({ [revision.id]: revision, [dinner.id]: dinner }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 960, bob: -960 });
+  assert.deepEqual(result.effective.map((event) => event.id), [revision.id]);
+});
+
+test("keeps the full expense chain auditable when a later revision arrives", () => {
+  const firstRevision = revisedExpense({
+    id: "55555555-5555-4555-8555-555555555555",
+    supersedesEventId: dinner.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 2400,
+    splits: [{ participantId: "alice", amount: 1440 }, { participantId: "bob", amount: 960 }]
+  });
+  const latestRevision = revisedExpense({
+    id: "65555555-5555-4555-8555-555555555555",
+    supersedesEventId: firstRevision.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 3000,
+    splits: [{ participantId: "alice", amount: 1800 }, { participantId: "bob", amount: 1200 }]
+  });
+  const result = projectLedger({ [latestRevision.id]: latestRevision, [dinner.id]: dinner, [firstRevision.id]: firstRevision }, projectionContext);
+  const reordered = projectLedger(new Map([[dinner.id, dinner], [firstRevision.id, firstRevision], [latestRevision.id, latestRevision]]), projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 1200, bob: -1200 });
+  assert.deepEqual(result.effective.map((event) => event.id), [latestRevision.id]);
+  assert.equal(result.quarantined.length, 0);
+  assert.equal(result.effective.some((event) => event.id === dinner.id), false);
+  assert.deepEqual(reordered, result);
+});
+
+test("voids an expense without deleting its source chain", () => {
+  const voided = voidedExpense({ id: "55555555-5555-4555-8555-555555555555", supersedesEventId: dinner.id, expenseId: dinner.payload.expenseId });
+  const result = projectLedger({ [voided.id]: voided, [dinner.id]: dinner }, projectionContext);
+
+  assert.deepEqual(result.balances, {});
+  assert.deepEqual(result.effective.map((event) => event.id), [voided.id]);
+  assert.equal(result.quarantined.length, 0);
+  assert.equal(dinner.payload.description, "Dinner");
+});
+
+test("diagnoses invalid revision and void references", () => {
+  const wrongExpense = revisedExpense({
+    id: "55555555-5555-4555-8555-555555555555",
+    supersedesEventId: dinner.id,
+    expenseId: "65555555-5555-4555-8555-555555555555",
+    amount: 2400,
+    splits: [{ participantId: "alice", amount: 1200 }, { participantId: "bob", amount: 1200 }]
+  });
+  const wrongTarget = voidedExpense({ id: "75555555-5555-4555-8555-555555555555", supersedesEventId: taxi.id, expenseId: dinner.payload.expenseId });
+  const result = projectLedger({ [dinner.id]: dinner, [taxi.id]: taxi, [wrongExpense.id]: wrongExpense, [wrongTarget.id]: wrongTarget }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 300, bob: 200, carol: -500 });
+  assert.deepEqual(result.quarantined, [
+    { id: wrongExpense.id, reason: "invalid-reference" },
+    { id: wrongTarget.id, reason: "invalid-reference" }
   ]);
 });
 

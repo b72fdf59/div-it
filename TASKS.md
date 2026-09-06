@@ -170,7 +170,7 @@ Status meanings:
 
 ### DIV-014 — Project expense revisions and voids
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-013
 - Deliverable: Add uncontested expense-revised and expense-voided chains.
 - Acceptance:
@@ -181,7 +181,7 @@ Status meanings:
 
 ### DIV-015 — Detect and resolve concurrent revisions
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-014
 - Deliverable: Detect sibling revisions of one base and implement conflict-resolved semantics.
 - Acceptance:

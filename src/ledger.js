@@ -168,6 +168,72 @@ export function projectLedger(eventsById, context) {
     }
   }
 
+  const expenseEventsById = new Map();
+  const childrenByParentId = new Map();
+  for (const [id, event] of parsedEntries) {
+    if (!readyEventIds.has(id) || !["expense-created", "expense-revised", "expense-voided"].includes(event.type)) continue;
+    expenseEventsById.set(id, event);
+    childrenByParentId.set(id, []);
+  }
+
+  const invalidExpenseEventIds = new Set();
+  const quarantineExpenseReference = (id) => {
+    if (!invalidExpenseEventIds.has(id)) {
+      invalidExpenseEventIds.add(id);
+      quarantined.push({ id, reason: "invalid-reference" });
+    }
+  };
+  for (const [id, event] of expenseEventsById) {
+    if (event.type === "expense-created") continue;
+    const parent = eventsByValidId.get(event.payload.supersedesEventId);
+    if (!parent
+      || !["expense-created", "expense-revised"].includes(parent.type)
+      || parent.payload.expenseId !== event.payload.expenseId) {
+      quarantineExpenseReference(id);
+      continue;
+    }
+    childrenByParentId.get(parent.id).push(id);
+  }
+
+  const invalidQueue = [...invalidExpenseEventIds];
+  for (let index = 0; index < invalidQueue.length; index++) {
+    for (const childId of childrenByParentId.get(invalidQueue[index]) ?? []) {
+      if (!invalidExpenseEventIds.has(childId)) {
+        quarantineExpenseReference(childId);
+        invalidQueue.push(childId);
+      }
+    }
+  }
+
+  const conflictingExpenseEventIds = new Set();
+  const conflictQueue = [];
+  for (const [parentId, childIds] of childrenByParentId) {
+    const validChildIds = childIds.filter((id) => !invalidExpenseEventIds.has(id));
+    if (validChildIds.length < 2) continue;
+    for (const childId of validChildIds) {
+      conflictingExpenseEventIds.add(childId);
+      conflictQueue.push(childId);
+      quarantined.push({ id: childId, reason: "conflicting-revision" });
+    }
+    childrenByParentId.set(parentId, validChildIds);
+  }
+  for (let index = 0; index < conflictQueue.length; index++) {
+    for (const childId of childrenByParentId.get(conflictQueue[index]) ?? []) {
+      if (!invalidExpenseEventIds.has(childId) && !conflictingExpenseEventIds.has(childId)) {
+        conflictingExpenseEventIds.add(childId);
+        quarantined.push({ id: childId, reason: "conflicting-revision" });
+        conflictQueue.push(childId);
+      }
+    }
+  }
+
+  const activeExpenseEventIds = new Set();
+  for (const [id] of expenseEventsById) {
+    if (invalidExpenseEventIds.has(id) || conflictingExpenseEventIds.has(id)) continue;
+    const activeChildren = (childrenByParentId.get(id) ?? []).filter((childId) => !invalidExpenseEventIds.has(childId) && !conflictingExpenseEventIds.has(childId));
+    if (activeChildren.length === 0) activeExpenseEventIds.add(id);
+  }
+
   const reversedSettlementIds = new Set();
   for (const [id, event] of parsedEntries) {
     if (blockedByMissing.has(id)) {
@@ -176,6 +242,17 @@ export function projectLedger(eventsById, context) {
       continue;
     }
     if (cyclicEventIds.has(id)) continue;
+    if (["expense-created", "expense-revised", "expense-voided"].includes(event.type)) {
+      if (!activeExpenseEventIds.has(id)) continue;
+      if (event.type === "expense-voided") {
+        effective.push(event);
+        continue;
+      }
+      addBalance(balancesByParticipant, event.payload.payerId, event.payload.amount);
+      for (const split of event.payload.splits) addBalance(balancesByParticipant, split.participantId, -split.amount);
+      effective.push(event);
+      continue;
+    }
     if (event.type === "settlement-recorded") {
       addBalance(balancesByParticipant, event.payload.fromParticipantId, event.payload.amount);
       addBalance(balancesByParticipant, event.payload.toParticipantId, -event.payload.amount);
@@ -200,11 +277,6 @@ export function projectLedger(eventsById, context) {
       effective.push(event);
       continue;
     }
-    if (event.type !== "expense-created") continue;
-
-    addBalance(balancesByParticipant, event.payload.payerId, event.payload.amount);
-    for (const split of event.payload.splits) addBalance(balancesByParticipant, split.participantId, -split.amount);
-    effective.push(event);
   }
 
   const balances = Object.fromEntries([...balancesByParticipant.entries()].sort(compareIds));
