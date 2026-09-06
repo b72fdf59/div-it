@@ -189,7 +189,7 @@ test("uses overflow-safe arithmetic when later events return balances to a safe 
   assert.deepEqual(result.quarantined, []);
 });
 
-test("quarantines money events whose combined balances cannot be represented safely", () => {
+test("makes an unrepresentable final balance read-only without blaming valid events", () => {
   const first = expense({
     id: "11111111-1111-4111-8111-111111111112",
     expenseId: "21111111-1111-4111-8111-111111111112",
@@ -209,8 +209,46 @@ test("quarantines money events whose combined balances cannot be represented saf
   const result = projectLedger({ [second.id]: second, [first.id]: first }, projectionContext);
 
   assert.deepEqual(result.balances, {});
-  assert.deepEqual(result.effective, []);
-  assert.deepEqual(result.quarantined, [first.id, second.id].map((id) => ({ id, reason: "balance-overflow" })));
+  assert.deepEqual(result.effective, [first, second]);
+  assert.deepEqual(result.quarantined, [{ id: "ledger", reason: "balance-overflow" }]);
+  assert.equal(result.readOnly, true);
+});
+
+test("preserves every valid event when the exact final balance is unrepresentable", () => {
+  const first = settlement({
+    id: "11111111-1111-4111-8111-111111111112",
+    settlementId: "21111111-1111-4111-8111-111111111112",
+    fromParticipantId: "alice",
+    toParticipantId: "bob",
+    amount: Number.MAX_SAFE_INTEGER
+  });
+  const second = settlement({
+    id: "31111111-1111-4111-8111-111111111112",
+    settlementId: "41111111-1111-4111-8111-111111111112",
+    fromParticipantId: "alice",
+    toParticipantId: "bob",
+    amount: Number.MAX_SAFE_INTEGER
+  });
+  const connected = settlement({
+    id: "51111111-1111-4111-8111-111111111112",
+    settlementId: "61111111-1111-4111-8111-111111111112",
+    fromParticipantId: "bob",
+    toParticipantId: "carol",
+    amount: 1
+  });
+  const unrelated = settlement({
+    id: "71111111-1111-4111-8111-111111111112",
+    settlementId: "81111111-1111-4111-8111-111111111112",
+    fromParticipantId: "dave",
+    toParticipantId: "erin",
+    amount: 25
+  });
+  const result = projectLedger(Object.fromEntries([first, second, connected, unrelated].map((event) => [event.id, event])), projectionContext);
+
+  assert.deepEqual(result.balances, {});
+  assert.deepEqual(result.effective, [first, second, connected, unrelated]);
+  assert.deepEqual(result.quarantined, [{ id: "ledger", reason: "balance-overflow" }]);
+  assert.equal(result.readOnly, true);
 });
 
 test("keeps missing-dependency events pending without blocking valid balances", () => {
