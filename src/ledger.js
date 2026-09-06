@@ -1,5 +1,8 @@
 import { parseEvent } from "./events.js";
 
+const MAX_LEDGER_EVENTS = 10_000;
+const MAX_LEDGER_BYTES = 8 * 1024 * 1024;
+
 export function cents(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) throw new Error("Enter an amount greater than zero.");
@@ -7,13 +10,33 @@ export function cents(value) {
 }
 
 function eventEntries(eventsById) {
-  const entries = eventsById instanceof Map
-    ? [...eventsById.entries()]
-    : eventsById && typeof eventsById === "object" && !Array.isArray(eventsById) ? Object.entries(eventsById) : null;
-  if (entries) return entries.flatMap(([id, value]) => Array.isArray(value)
-    ? value.map((variant) => [id, variant])
-    : [[id, value]]);
-  throw new TypeError("eventsById must be an object or Map");
+  let sources;
+  if (eventsById instanceof Map) sources = eventsById.entries();
+  else if (eventsById && typeof eventsById === "object" && !Array.isArray(eventsById)) {
+    sources = (function* ownEntries() {
+      for (const id in eventsById) {
+        if (Object.hasOwn(eventsById, id)) yield [id, eventsById[id]];
+      }
+    })();
+  } else throw new TypeError("eventsById must be an object or Map");
+
+  const entries = [];
+  let encodedBytes = 0;
+  for (const [id, value] of sources) {
+    const variants = Array.isArray(value) ? value : [value];
+    for (const variant of variants) {
+      entries.push([id, variant]);
+      if (entries.length > MAX_LEDGER_EVENTS) return null;
+      try {
+        const encoded = typeof variant === "string" ? variant : JSON.stringify(variant);
+        encodedBytes += new TextEncoder().encode(encoded ?? "").byteLength;
+      } catch {
+        encodedBytes = MAX_LEDGER_BYTES + 1;
+      }
+      if (encodedBytes > MAX_LEDGER_BYTES) return null;
+    }
+  }
+  return entries;
 }
 
 function compareIds([left], [right]) {
@@ -23,9 +46,7 @@ function compareIds([left], [right]) {
 }
 
 function addBalance(balancesByParticipant, participantId, amount) {
-  const next = (balancesByParticipant.get(participantId) ?? 0) + amount;
-  if (!Number.isSafeInteger(next)) throw new RangeError("balance-overflow");
-  balancesByParticipant.set(participantId, next);
+  balancesByParticipant.set(participantId, (balancesByParticipant.get(participantId) ?? 0n) + BigInt(amount));
 }
 
 function canonicalJson(value) {
@@ -43,6 +64,14 @@ function fullEventContent(event) {
   return canonicalJson(event);
 }
 
+function logicalIdentity(event) {
+  if (event.type === "expense-created") return ["expense", event.payload.expenseId];
+  if (event.type === "settlement-recorded") return ["settlement", event.payload.settlementId];
+  if (event.type === "opening-balances-imported") return ["import", event.payload.importId];
+  if (event.type === "conflict-resolved") return ["resolution", event.payload.resolutionId];
+  return null;
+}
+
 export function projectLedger(eventsById, context) {
   if (!context
     || typeof context !== "object"
@@ -50,7 +79,19 @@ export function projectLedger(eventsById, context) {
     || typeof context.currency !== "string"
     || typeof context.isEventAuthorized !== "function") throw new TypeError("invalid-projection-context");
 
-  const entries = eventEntries(eventsById).sort(compareIds);
+  const entries = eventEntries(eventsById);
+  if (entries === null) return {
+    balances: {},
+    effective: [],
+    pending: [],
+    conflicting: [],
+    quarantined: [{ id: "ledger", reason: "ledger-too-large" }],
+    unsupported: [],
+    readOnly: true,
+    duplicates: [],
+    ignored: []
+  };
+  entries.sort(compareIds);
   const balancesByParticipant = new Map();
   const effective = [];
   const pending = [];
@@ -62,12 +103,24 @@ export function projectLedger(eventsById, context) {
   const parsedEntries = [];
   const variantsById = new Map();
 
+  const isAuthorized = (event) => {
+    try {
+      return context.isEventAuthorized(structuredClone(event)) === true;
+    } catch {
+      return false;
+    }
+  };
+
   for (const [id, rawEvent] of entries) {
     const parsed = parseEvent(rawEvent);
     if (!parsed.ok) {
       const diagnostic = { id, reason: parsed.reason };
-      if (parsed.reason === "unsupported-version" || parsed.reason === "unsupported-event-type") unsupported.push(diagnostic);
-      else quarantined.push(diagnostic);
+      if ((parsed.reason === "unsupported-version" || parsed.reason === "unsupported-event-type") && parsed.event) {
+        if (id !== parsed.event.id) quarantined.push({ id, reason: "event-id-mismatch" });
+        else if (parsed.event.groupId !== context.groupId) quarantined.push({ id, reason: "group-mismatch" });
+        else if (!isAuthorized(parsed.event)) quarantined.push({ id, reason: "unauthenticated" });
+        else unsupported.push(diagnostic);
+      } else quarantined.push(diagnostic);
       continue;
     }
     if (id !== parsed.event.id) {
@@ -90,13 +143,7 @@ export function projectLedger(eventsById, context) {
   for (const [id, variants] of [...variantsById.entries()].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) {
     const authorizedVariants = [];
     for (const event of variants) {
-      let authorized = false;
-      try {
-        authorized = context.isEventAuthorized(structuredClone(event)) === true;
-      } catch {
-        authorized = false;
-      }
-      if (authorized) authorizedVariants.push(event);
+      if (isAuthorized(event)) authorizedVariants.push(event);
       else quarantined.push({ id, reason: "unauthenticated" });
     }
     const contentGroups = new Map();
@@ -119,6 +166,25 @@ export function projectLedger(eventsById, context) {
     if (authorizedVariants.length > 1) duplicates.push({ id, reason: "duplicate-ignored", count: authorizedVariants.length - 1 });
     parsedEntries.push([id, selected]);
   }
+
+  const logicalGroups = new Map();
+  for (const [id, event] of parsedEntries) {
+    const identity = logicalIdentity(event);
+    if (!identity) continue;
+    const key = canonicalJson(identity);
+    if (!logicalGroups.has(key)) logicalGroups.set(key, []);
+    logicalGroups.get(key).push([id, event]);
+  }
+
+  const rejectedLogicalIds = new Set();
+  for (const group of logicalGroups.values()) {
+    if (group.length < 2) continue;
+    for (const [id] of group) {
+      rejectedLogicalIds.add(id);
+      quarantined.push({ id, reason: "logical-id-content-collision" });
+    }
+  }
+  parsedEntries.splice(0, parsedEntries.length, ...parsedEntries.filter(([id]) => !rejectedLogicalIds.has(id)));
 
   const eventsByValidId = new Map(parsedEntries);
   const dependentsById = new Map(parsedEntries.map(([id]) => [id, []]));
@@ -207,13 +273,17 @@ export function projectLedger(eventsById, context) {
   }
 
   const conflictGroups = new Map();
+  const conflictGroupByBranches = new Map();
   for (const [parentId, childIds] of childrenByParentId) {
     const validChildIds = childIds.filter((id) => !invalidExpenseEventIds.has(id));
     childrenByParentId.set(parentId, validChildIds);
-    if (validChildIds.length >= 2) conflictGroups.set(parentId, [...validChildIds].sort());
+    if (validChildIds.length >= 2) {
+      const branchIds = [...validChildIds].sort();
+      conflictGroups.set(parentId, branchIds);
+      conflictGroupByBranches.set(canonicalJson(branchIds), parentId);
+    }
   }
 
-  const sameIds = (left, right) => left.length === right.length && left.every((id, index) => id === right[index]);
   const resolutionEventsById = new Map();
   for (const [id, event] of parsedEntries) {
     if (readyEventIds.has(id) && event.type === "conflict-resolved") resolutionEventsById.set(id, event);
@@ -229,12 +299,12 @@ export function projectLedger(eventsById, context) {
   const resolutionGroupById = new Map();
   const resolutionGroups = new Map();
   for (const [id, event] of resolutionEventsById) {
-    const match = [...conflictGroups.entries()].find(([, branchIds]) => sameIds(branchIds, event.payload.resolvesEventIds));
-    if (!match || !match[1].every((branchId) => expenseEventsById.get(branchId).payload.expenseId === event.payload.expenseId)) {
+    const resolvedBranchIds = event.payload.resolvesEventIds;
+    const parentId = conflictGroupByBranches.get(canonicalJson(resolvedBranchIds));
+    if (!parentId || !resolvedBranchIds.every((branchId) => expenseEventsById.get(branchId).payload.expenseId === event.payload.expenseId)) {
       quarantineResolution(id);
       continue;
     }
-    const [parentId] = match;
     resolutionGroupById.set(id, parentId);
     if (!resolutionGroups.has(parentId)) resolutionGroups.set(parentId, []);
     resolutionGroups.get(parentId).push(id);
@@ -254,8 +324,10 @@ export function projectLedger(eventsById, context) {
     const validResolutionIds = resolutionIds.filter((id) => !invalidResolutionEventIds.has(id));
     const supersededResolutionIds = new Set(validResolutionIds.flatMap((id) => resolutionEventsById.get(id).payload.supersedesResolutionEventIds));
     const maximalResolutionIds = validResolutionIds.filter((id) => !supersededResolutionIds.has(id));
+    const historicalChosenEventIds = new Set(validResolutionIds.map((id) => resolutionEventsById.get(id).payload.chosenEventId));
     const chosenEventIds = new Set(maximalResolutionIds.map((id) => resolutionEventsById.get(id).payload.chosenEventId));
-    if (chosenEventIds.size === 1 && maximalResolutionIds.length > 0) {
+    const disputeFullySuperseded = historicalChosenEventIds.size <= 1 || maximalResolutionIds.length === 1;
+    if (chosenEventIds.size === 1 && maximalResolutionIds.length > 0 && disputeFullySuperseded) {
       resolvedBranchByParentId.set(parentId, [...chosenEventIds][0]);
       effectiveResolutionIds.add([...maximalResolutionIds].sort()[0]);
     } else {
@@ -289,6 +361,12 @@ export function projectLedger(eventsById, context) {
   }
 
   const reversedSettlementIds = new Set();
+  const contributionsByEventId = new Map();
+  const contribute = (eventId, participantId, amount) => {
+    addBalance(balancesByParticipant, participantId, amount);
+    if (!contributionsByEventId.has(eventId)) contributionsByEventId.set(eventId, new Map());
+    addBalance(contributionsByEventId.get(eventId), participantId, amount);
+  };
   for (const [id, event] of parsedEntries) {
     if (blockedByMissing.has(id)) {
       const missingDependencyIds = event.dependsOn.filter((dependencyId) => !readyEventIds.has(dependencyId));
@@ -306,14 +384,19 @@ export function projectLedger(eventsById, context) {
         effective.push(event);
         continue;
       }
-      addBalance(balancesByParticipant, event.payload.payerId, event.payload.amount);
-      for (const split of event.payload.splits) addBalance(balancesByParticipant, split.participantId, -split.amount);
+      contribute(id, event.payload.payerId, event.payload.amount);
+      for (const split of event.payload.splits) contribute(id, split.participantId, -split.amount);
+      effective.push(event);
+      continue;
+    }
+    if (event.type === "opening-balances-imported") {
+      for (const balance of event.payload.balances) contribute(id, balance.participantId, balance.amount);
       effective.push(event);
       continue;
     }
     if (event.type === "settlement-recorded") {
-      addBalance(balancesByParticipant, event.payload.fromParticipantId, event.payload.amount);
-      addBalance(balancesByParticipant, event.payload.toParticipantId, -event.payload.amount);
+      contribute(id, event.payload.fromParticipantId, event.payload.amount);
+      contribute(id, event.payload.toParticipantId, -event.payload.amount);
       effective.push(event);
       continue;
     }
@@ -330,14 +413,32 @@ export function projectLedger(eventsById, context) {
         continue;
       }
       reversedSettlementIds.add(event.payload.settlementId);
-      addBalance(balancesByParticipant, target.payload.fromParticipantId, -target.payload.amount);
-      addBalance(balancesByParticipant, target.payload.toParticipantId, target.payload.amount);
+      contribute(id, target.payload.fromParticipantId, -target.payload.amount);
+      contribute(id, target.payload.toParticipantId, target.payload.amount);
       effective.push(event);
       continue;
     }
   }
 
-  const balances = Object.fromEntries([...balancesByParticipant.entries()].sort(compareIds));
+  const overflowEventIds = new Set();
+  while ([...balancesByParticipant.values()].some((balance) => balance > BigInt(Number.MAX_SAFE_INTEGER) || balance < BigInt(Number.MIN_SAFE_INTEGER))) {
+    const unsafeParticipantIds = new Set([...balancesByParticipant].filter(([, balance]) => balance > BigInt(Number.MAX_SAFE_INTEGER) || balance < BigInt(Number.MIN_SAFE_INTEGER)).map(([id]) => id));
+    for (const [id, contributions] of contributionsByEventId) {
+      if ([...contributions.keys()].some((participantId) => unsafeParticipantIds.has(participantId))) overflowEventIds.add(id);
+    }
+    balancesByParticipant.clear();
+    for (const [id, contributions] of contributionsByEventId) {
+      if (overflowEventIds.has(id)) continue;
+      for (const [participantId, amount] of contributions) addBalance(balancesByParticipant, participantId, amount);
+    }
+  }
+  if (overflowEventIds.size > 0) {
+    for (const id of [...overflowEventIds].sort()) quarantined.push({ id, reason: "balance-overflow" });
+    const retainedEffective = effective.filter((event) => !overflowEventIds.has(event.id));
+    effective.splice(0, effective.length, ...retainedEffective);
+  }
+
+  const balances = Object.fromEntries([...balancesByParticipant.entries()].sort(compareIds).map(([id, balance]) => [id, Number(balance)]));
   const total = Object.values(balances).reduce((sum, balance) => sum + BigInt(balance), 0n);
   if (total !== 0n) throw new Error("non-zero-sum");
 

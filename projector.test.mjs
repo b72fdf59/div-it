@@ -161,6 +161,58 @@ test("always returns zero-sum balances", () => {
   });
 });
 
+test("uses overflow-safe arithmetic when later events return balances to a safe range", () => {
+  const maximumExpense = expense({
+    id: "11111111-1111-4111-8111-111111111112",
+    expenseId: "21111111-1111-4111-8111-111111111112",
+    description: "Maximum safe expense",
+    payerId: "alice",
+    amount: Number.MAX_SAFE_INTEGER,
+    splits: [{ participantId: "bob", amount: Number.MAX_SAFE_INTEGER }]
+  });
+  const payment = settlement({
+    id: "51111111-1111-4111-8111-111111111112",
+    settlementId: "61111111-1111-4111-8111-111111111112",
+    fromParticipantId: "bob",
+    toParticipantId: "alice",
+    amount: Number.MAX_SAFE_INTEGER
+  });
+  const undo = reversal({
+    id: "31111111-1111-4111-8111-111111111112",
+    settlementId: payment.payload.settlementId,
+    reversesEventId: payment.id
+  });
+  const result = projectLedger({ [payment.id]: payment, [undo.id]: undo, [maximumExpense.id]: maximumExpense }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: Number.MAX_SAFE_INTEGER, bob: -Number.MAX_SAFE_INTEGER });
+  assert.deepEqual(result.effective.map((event) => event.id), [maximumExpense.id, undo.id, payment.id]);
+  assert.deepEqual(result.quarantined, []);
+});
+
+test("quarantines money events whose combined balances cannot be represented safely", () => {
+  const first = expense({
+    id: "11111111-1111-4111-8111-111111111112",
+    expenseId: "21111111-1111-4111-8111-111111111112",
+    description: "First maximum expense",
+    payerId: "alice",
+    amount: Number.MAX_SAFE_INTEGER,
+    splits: [{ participantId: "bob", amount: Number.MAX_SAFE_INTEGER }]
+  });
+  const second = expense({
+    id: "31111111-1111-4111-8111-111111111112",
+    expenseId: "41111111-1111-4111-8111-111111111112",
+    description: "Second maximum expense",
+    payerId: "alice",
+    amount: Number.MAX_SAFE_INTEGER,
+    splits: [{ participantId: "bob", amount: Number.MAX_SAFE_INTEGER }]
+  });
+  const result = projectLedger({ [second.id]: second, [first.id]: first }, projectionContext);
+
+  assert.deepEqual(result.balances, {});
+  assert.deepEqual(result.effective, []);
+  assert.deepEqual(result.quarantined, [first.id, second.id].map((id) => ({ id, reason: "balance-overflow" })));
+});
+
 test("keeps missing-dependency events pending without blocking valid balances", () => {
   const dependent = { ...dinner, dependsOn: ["99999999-9999-4999-8999-999999999999"] };
   const result = projectLedger({ [dependent.id]: dependent, [taxi.id]: taxi }, projectionContext);
@@ -195,6 +247,48 @@ test("applies exact duplicate event content once", () => {
   assert.deepEqual(result.balances, { alice: 800, bob: -800 });
   assert.deepEqual(result.effective, [dinner]);
   assert.deepEqual(result.duplicates, [{ id: dinner.id, reason: "duplicate-ignored", count: 1 }]);
+});
+
+test("quarantines different envelopes that reuse a logical ID even when their payloads match", () => {
+  const alias = { ...structuredClone(dinner), id: "21111111-1111-4111-8111-111111111112", signature: "signature-expense-alias" };
+  const revision = revisedExpense({
+    id: "51111111-1111-4111-8111-111111111111",
+    supersedesEventId: alias.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 2400,
+    splits: [{ participantId: "alice", amount: 1440 }, { participantId: "bob", amount: 960 }]
+  });
+  const result = projectLedger({ [revision.id]: revision, [alias.id]: alias, [dinner.id]: dinner }, projectionContext);
+
+  assert.deepEqual(result.balances, {});
+  assert.deepEqual(result.effective, []);
+  assert.deepEqual(result.pending.map(({ event }) => event.id), [revision.id]);
+  assert.deepEqual(result.duplicates, []);
+  assert.deepEqual(result.quarantined, [dinner.id, alias.id].sort().map((id) => ({ id, reason: "logical-id-content-collision" })));
+});
+
+test("quarantines conflicting logical expense creators and blocks their dependents", () => {
+  const collision = expense({
+    id: "21111111-1111-4111-8111-111111111112",
+    expenseId: dinner.payload.expenseId,
+    description: "Different dinner",
+    payerId: "alice",
+    amount: 3000,
+    splits: [{ participantId: "alice", amount: 1800 }, { participantId: "bob", amount: 1200 }]
+  });
+  const revision = revisedExpense({
+    id: "51111111-1111-4111-8111-111111111111",
+    supersedesEventId: dinner.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 2400,
+    splits: [{ participantId: "alice", amount: 1440 }, { participantId: "bob", amount: 960 }]
+  });
+  const result = projectLedger({ [revision.id]: revision, [collision.id]: collision, [dinner.id]: dinner, [taxi.id]: taxi }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: -500, bob: 1000, carol: -500 });
+  assert.deepEqual(result.effective.map((event) => event.id), [taxi.id]);
+  assert.deepEqual(result.pending.map(({ event }) => event.id), [revision.id]);
+  assert.deepEqual(result.quarantined, [dinner.id, collision.id].sort().map((id) => ({ id, reason: "logical-id-content-collision" })));
 });
 
 test("does not let an unauthorized duplicate shadow an authorized one", () => {
@@ -303,6 +397,30 @@ test("quarantines reversals with invalid targets or settlement IDs", () => {
     { id: wrongTarget.id, reason: "invalid-reference" },
     { id: wrongSettlement.id, reason: "invalid-reference" }
   ]);
+});
+
+test("quarantines settlements that reuse one logical ID with different content", () => {
+  const first = settlement({
+    id: "55555555-5555-4555-8555-555555555555",
+    settlementId: "65555555-5555-4555-8555-555555555555",
+    fromParticipantId: "bob",
+    toParticipantId: "alice",
+    amount: 800
+  });
+  const second = settlement({
+    id: "75555555-5555-4555-8555-555555555555",
+    settlementId: first.payload.settlementId,
+    fromParticipantId: "alice",
+    toParticipantId: "bob",
+    amount: 300
+  });
+  const undo = reversal({ id: "85555555-5555-4555-8555-555555555555", settlementId: first.payload.settlementId, reversesEventId: first.id });
+  const result = projectLedger({ [undo.id]: undo, [second.id]: second, [first.id]: first }, projectionContext);
+
+  assert.deepEqual(result.balances, {});
+  assert.deepEqual(result.effective, []);
+  assert.deepEqual(result.pending.map(({ event }) => event.id), [undo.id]);
+  assert.deepEqual(result.quarantined, [first.id, second.id].map((id) => ({ id, reason: "logical-id-content-collision" })));
 });
 
 test("projects only the latest uncontested expense revision", () => {
@@ -511,6 +629,58 @@ test("requires a later resolution to supersede competing resolution attempts", (
   assert.deepEqual(resolved.quarantined, []);
 });
 
+test("does not resolve a disputed choice by superseding only one competing attempt", () => {
+  const firstBranch = revisedExpense({
+    id: "55555555-5555-4555-8555-555555555555",
+    supersedesEventId: dinner.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 2400,
+    splits: [{ participantId: "alice", amount: 1440 }, { participantId: "bob", amount: 960 }]
+  });
+  const secondBranch = revisedExpense({
+    id: "65555555-5555-4555-8555-555555555555",
+    supersedesEventId: dinner.id,
+    expenseId: dinner.payload.expenseId,
+    amount: 3000,
+    splits: [{ participantId: "alice", amount: 1800 }, { participantId: "bob", amount: 1200 }]
+  });
+  const firstResolution = conflictResolution({
+    id: "75555555-5555-4555-8555-555555555555",
+    expenseId: dinner.payload.expenseId,
+    resolvesEventIds: [firstBranch.id, secondBranch.id],
+    chosenEventId: firstBranch.id
+  });
+  const secondResolution = conflictResolution({
+    id: "85555555-5555-4555-8555-555555555555",
+    expenseId: dinner.payload.expenseId,
+    resolvesEventIds: [firstBranch.id, secondBranch.id],
+    chosenEventId: secondBranch.id
+  });
+  const partialResolution = conflictResolution({
+    id: "95555555-5555-4555-8555-555555555555",
+    expenseId: dinner.payload.expenseId,
+    resolvesEventIds: [firstBranch.id, secondBranch.id],
+    chosenEventId: secondBranch.id,
+    supersedesResolutionEventIds: [firstResolution.id]
+  });
+  const result = projectLedger(Object.fromEntries([
+    dinner,
+    firstBranch,
+    secondBranch,
+    firstResolution,
+    secondResolution,
+    partialResolution
+  ].map((event) => [event.id, event])), projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 800, bob: -800 });
+  assert.deepEqual(result.effective.map((event) => event.id), [dinner.id]);
+  assert.deepEqual(result.conflicting, [
+    { id: firstBranch.id, reason: "conflicting-revision" },
+    { id: secondBranch.id, reason: "conflicting-revision" },
+    ...[secondResolution.id, partialResolution.id].sort().map((id) => ({ id, reason: "conflicting-resolution" }))
+  ]);
+});
+
 test("rejects events outside the trusted group and currency", () => {
   const otherGroup = { ...dinner, groupId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" };
   const otherCurrency = { ...dinner, payload: { ...dinner.payload, currency: "EUR" } };
@@ -560,6 +730,43 @@ test("marks projections with unsupported events read-only", () => {
   assert.equal(result.readOnly, true);
 });
 
+test("does not let untrusted unsupported events force read-only mode", () => {
+  const future = { ...taxi, schemaVersion: 2 };
+  const unauthorized = projectLedger({ [future.id]: future }, { ...projectionContext, isEventAuthorized: () => false });
+  const otherGroup = { ...future, groupId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" };
+  const foreign = projectLedger({ [otherGroup.id]: otherGroup }, projectionContext);
+
+  assert.equal(unauthorized.readOnly, false);
+  assert.deepEqual(unauthorized.unsupported, []);
+  assert.deepEqual(unauthorized.quarantined, [{ id: future.id, reason: "unauthenticated" }]);
+  assert.equal(foreign.readOnly, false);
+  assert.deepEqual(foreign.unsupported, []);
+  assert.deepEqual(foreign.quarantined, [{ id: otherGroup.id, reason: "group-mismatch" }]);
+});
+
+test("projects opening balances and keeps them in the audit trail", () => {
+  const imported = {
+    ...structuredClone(dinner),
+    id: "71111111-1111-4111-8111-111111111111",
+    type: "opening-balances-imported",
+    payload: {
+      importId: "81111111-1111-4111-8111-111111111111",
+      currency: "USD",
+      sourceFormat: "splitwise-csv",
+      balances: [
+        { participantId: "alice", amount: 766 },
+        { participantId: "bob", amount: -766 }
+      ]
+    },
+    signature: "signature-opening-balances"
+  };
+  const result = projectLedger({ [imported.id]: imported }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 766, bob: -766 });
+  assert.deepEqual(result.effective, [imported]);
+  assert.deepEqual(result.quarantined, []);
+});
+
 test("quarantines malformed events without blocking valid balances", () => {
   const malformedId = "55555555-5555-4555-8555-555555555555";
   const result = projectLedger({ [dinner.id]: dinner, [malformedId]: { nope: true } }, projectionContext);
@@ -567,6 +774,48 @@ test("quarantines malformed events without blocking valid balances", () => {
   assert.deepEqual(result.balances, { alice: 800, bob: -800 });
   assert.deepEqual(result.effective, [dinner]);
   assert.deepEqual(result.quarantined, [{ id: malformedId, reason: "invalid-envelope" }]);
+});
+
+test("stops before projecting an excessive number of event envelopes", () => {
+  const variants = Array.from({ length: 10_001 }, () => dinner);
+  const result = projectLedger({ [dinner.id]: variants }, projectionContext);
+
+  assert.deepEqual(result, {
+    balances: {},
+    effective: [],
+    pending: [],
+    conflicting: [],
+    quarantined: [{ id: "ledger", reason: "ledger-too-large" }],
+    unsupported: [],
+    readOnly: true,
+    duplicates: [],
+    ignored: []
+  });
+});
+
+test("does not fully materialize an oversized event Map before stopping", () => {
+  class OversizedMap extends Map {
+    *entries() {
+      for (let index = 0; index <= 10_000; index++) yield [`event-${index}`, dinner];
+      throw new Error("read beyond ledger event limit");
+    }
+  }
+
+  const result = projectLedger(new OversizedMap(), projectionContext);
+
+  assert.equal(result.readOnly, true);
+  assert.deepEqual(result.quarantined, [{ id: "ledger", reason: "ledger-too-large" }]);
+});
+
+test("stops before projecting excessive aggregate event bytes", () => {
+  const oversizedLedger = new Map();
+  const encoded = JSON.stringify(dinner).padEnd(65_536, " ");
+  for (let index = 0; index < 129; index++) oversizedLedger.set(`event-${index}`, encoded);
+  const result = projectLedger(oversizedLedger, projectionContext);
+
+  assert.equal(result.readOnly, true);
+  assert.deepEqual(result.quarantined, [{ id: "ledger", reason: "ledger-too-large" }]);
+  assert.deepEqual(result.balances, {});
 });
 
 test("quarantines dependency cycles", () => {
