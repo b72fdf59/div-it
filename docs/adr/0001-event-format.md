@@ -56,6 +56,7 @@ Envelope rules:
 - `payload` is an object matching the selected type. Unknown semantic fields are rejected for this version; preserved future extensions must live in an explicitly namespaced extension field.
 - `signature` is base64url text without padding. Its algorithm and verification rules are intentionally deferred. Structural validation must still require the field and later identity validation must classify a failed signature as `unauthenticated`.
 - An encoded event is at most 65,536 UTF-8 bytes. `dependsOn` and every payload collection contain at most 256 entries, signatures contain at most 512 base64url characters, and timestamps use at most nine fractional-second digits. Larger inputs are quarantined as `event-too-large` before projection.
+- One projection accepts at most 10,000 event envelopes and 8 MiB of aggregate encoded event data. A larger input returns `ledger-too-large` and is read-only before sorting or graph construction. Storage and relay quotas are separate controls.
 
 ### Canonical signed content
 
@@ -266,6 +267,7 @@ These examples describe the minimum diagnosis surface for validators and tests:
 | Schema or protocol version is unsupported | `unsupported-version` | Preserve; read-only if money-affecting |
 | Signature is absent or fails verification | `unauthenticated` | Quarantine |
 | Event or collection exceeds its resource limit | `event-too-large` | Quarantine |
+| Ledger exceeds its envelope or aggregate byte limit | `ledger-too-large` | Stop projection; read-only |
 | Two revisions supersede one base concurrently | `conflicting-revision` | Keep last uncontested projection; require resolution |
 | Resolution omits one sibling or chooses an external ID | `invalid-resolution` | Quarantine |
 | Concurrent resolutions choose different branches | `conflicting-resolution` | Keep last uncontested projection; require superseding resolution |

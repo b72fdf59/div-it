@@ -1,5 +1,8 @@
 import { parseEvent } from "./events.js";
 
+const MAX_LEDGER_EVENTS = 10_000;
+const MAX_LEDGER_BYTES = 8 * 1024 * 1024;
+
 export function cents(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) throw new Error("Enter an amount greater than zero.");
@@ -7,13 +10,28 @@ export function cents(value) {
 }
 
 function eventEntries(eventsById) {
-  const entries = eventsById instanceof Map
+  const sources = eventsById instanceof Map
     ? [...eventsById.entries()]
     : eventsById && typeof eventsById === "object" && !Array.isArray(eventsById) ? Object.entries(eventsById) : null;
-  if (entries) return entries.flatMap(([id, value]) => Array.isArray(value)
-    ? value.map((variant) => [id, variant])
-    : [[id, value]]);
-  throw new TypeError("eventsById must be an object or Map");
+  if (!sources) throw new TypeError("eventsById must be an object or Map");
+
+  const entries = [];
+  let encodedBytes = 0;
+  for (const [id, value] of sources) {
+    const variants = Array.isArray(value) ? value : [value];
+    for (const variant of variants) {
+      entries.push([id, variant]);
+      if (entries.length > MAX_LEDGER_EVENTS) return null;
+      try {
+        const encoded = typeof variant === "string" ? variant : JSON.stringify(variant);
+        encodedBytes += new TextEncoder().encode(encoded ?? "").byteLength;
+      } catch {
+        encodedBytes = MAX_LEDGER_BYTES + 1;
+      }
+      if (encodedBytes > MAX_LEDGER_BYTES) return null;
+    }
+  }
+  return entries;
 }
 
 function compareIds([left], [right]) {
@@ -56,7 +74,19 @@ export function projectLedger(eventsById, context) {
     || typeof context.currency !== "string"
     || typeof context.isEventAuthorized !== "function") throw new TypeError("invalid-projection-context");
 
-  const entries = eventEntries(eventsById).sort(compareIds);
+  const entries = eventEntries(eventsById);
+  if (entries === null) return {
+    balances: {},
+    effective: [],
+    pending: [],
+    conflicting: [],
+    quarantined: [{ id: "ledger", reason: "ledger-too-large" }],
+    unsupported: [],
+    readOnly: true,
+    duplicates: [],
+    ignored: []
+  };
+  entries.sort(compareIds);
   const balancesByParticipant = new Map();
   const effective = [];
   const pending = [];

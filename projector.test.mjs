@@ -776,6 +776,34 @@ test("quarantines malformed events without blocking valid balances", () => {
   assert.deepEqual(result.quarantined, [{ id: malformedId, reason: "invalid-envelope" }]);
 });
 
+test("stops before projecting an excessive number of event envelopes", () => {
+  const variants = Array.from({ length: 10_001 }, () => dinner);
+  const result = projectLedger({ [dinner.id]: variants }, projectionContext);
+
+  assert.deepEqual(result, {
+    balances: {},
+    effective: [],
+    pending: [],
+    conflicting: [],
+    quarantined: [{ id: "ledger", reason: "ledger-too-large" }],
+    unsupported: [],
+    readOnly: true,
+    duplicates: [],
+    ignored: []
+  });
+});
+
+test("stops before projecting excessive aggregate event bytes", () => {
+  const oversizedLedger = new Map();
+  const encoded = JSON.stringify(dinner).padEnd(65_536, " ");
+  for (let index = 0; index < 129; index++) oversizedLedger.set(`event-${index}`, encoded);
+  const result = projectLedger(oversizedLedger, projectionContext);
+
+  assert.equal(result.readOnly, true);
+  assert.deepEqual(result.quarantined, [{ id: "ledger", reason: "ledger-too-large" }]);
+  assert.deepEqual(result.balances, {});
+});
+
 test("quarantines dependency cycles", () => {
   const first = { ...dinner, dependsOn: [taxi.id] };
   const second = { ...taxi, dependsOn: [dinner.id] };
