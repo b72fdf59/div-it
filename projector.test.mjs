@@ -124,6 +124,7 @@ test("projects created expenses independently of insertion order", () => {
     balances: { alice: 300, bob: 200, carol: -500 },
     effective: [dinner, taxi],
     pending: [],
+    conflicting: [],
     quarantined: [],
     unsupported: [],
     readOnly: false,
@@ -156,7 +157,7 @@ test("always returns zero-sum balances", () => {
   const { balances } = projectLedger({ [dinner.id]: dinner, [taxi.id]: taxi }, projectionContext);
   assert.equal(Object.values(balances).reduce((sum, balance) => sum + balance, 0), 0);
   assert.deepEqual(projectLedger({}, projectionContext), {
-    balances: {}, effective: [], pending: [], quarantined: [], unsupported: [], readOnly: false, duplicates: [], ignored: []
+    balances: {}, effective: [], pending: [], conflicting: [], quarantined: [], unsupported: [], readOnly: false, duplicates: [], ignored: []
   });
 });
 
@@ -391,7 +392,7 @@ test("keeps the last uncontested expense effective during a revision conflict", 
 
   assert.deepEqual(result.balances, { alice: 800, bob: -800 });
   assert.deepEqual(result.effective.map((event) => event.id), [dinner.id]);
-  assert.deepEqual(result.quarantined, [
+  assert.deepEqual(result.conflicting, [
     { id: firstBranch.id, reason: "conflicting-revision" },
     { id: secondBranch.id, reason: "conflicting-revision" }
   ]);
@@ -450,9 +451,11 @@ test("does not accept a resolution for an incomplete or unrelated branch set", (
   const result = projectLedger({ [invalidResolution.id]: invalidResolution, [firstBranch.id]: firstBranch, [dinner.id]: dinner, [secondBranch.id]: secondBranch, [taxi.id]: taxi }, projectionContext);
 
   assert.deepEqual(result.balances, { alice: 300, bob: 200, carol: -500 });
-  assert.deepEqual(result.quarantined, [
+  assert.deepEqual(result.conflicting, [
     { id: firstBranch.id, reason: "conflicting-revision" },
-    { id: secondBranch.id, reason: "conflicting-revision" },
+    { id: secondBranch.id, reason: "conflicting-revision" }
+  ]);
+  assert.deepEqual(result.quarantined, [
     { id: invalidResolution.id, reason: "invalid-resolution" }
   ]);
 });
@@ -496,12 +499,13 @@ test("requires a later resolution to supersede competing resolution attempts", (
 
   assert.deepEqual(unresolved.balances, { alice: 800, bob: -800 });
   assert.deepEqual(unresolved.effective.map((event) => event.id), [dinner.id]);
-  assert.deepEqual(unresolved.quarantined, [
+  assert.deepEqual(unresolved.conflicting, [
     { id: firstBranch.id, reason: "conflicting-revision" },
     { id: secondBranch.id, reason: "conflicting-revision" },
     { id: firstResolution.id, reason: "conflicting-resolution" },
     { id: secondResolution.id, reason: "conflicting-resolution" }
   ]);
+  assert.deepEqual(unresolved.quarantined, []);
   assert.deepEqual(resolved.balances, { alice: 960, bob: -960 });
   assert.deepEqual(resolved.effective.map((event) => event.id), [firstBranch.id, finalResolution.id]);
   assert.deepEqual(resolved.quarantined, []);
