@@ -362,10 +362,13 @@ export function projectLedger(eventsById, context) {
 
   const reversedSettlementIds = new Set();
   const contributionsByEventId = new Map();
+  const eventIdsByParticipant = new Map();
   const contribute = (eventId, participantId, amount) => {
     addBalance(balancesByParticipant, participantId, amount);
     if (!contributionsByEventId.has(eventId)) contributionsByEventId.set(eventId, new Map());
     addBalance(contributionsByEventId.get(eventId), participantId, amount);
+    if (!eventIdsByParticipant.has(participantId)) eventIdsByParticipant.set(participantId, new Set());
+    eventIdsByParticipant.get(participantId).add(eventId);
   };
   for (const [id, event] of parsedEntries) {
     if (blockedByMissing.has(id)) {
@@ -420,19 +423,29 @@ export function projectLedger(eventsById, context) {
     }
   }
 
+  const unsafeParticipantQueue = [...balancesByParticipant]
+    .filter(([, balance]) => balance > BigInt(Number.MAX_SAFE_INTEGER) || balance < BigInt(Number.MIN_SAFE_INTEGER))
+    .map(([id]) => id);
+  const visitedParticipantIds = new Set(unsafeParticipantQueue);
   const overflowEventIds = new Set();
-  while ([...balancesByParticipant.values()].some((balance) => balance > BigInt(Number.MAX_SAFE_INTEGER) || balance < BigInt(Number.MIN_SAFE_INTEGER))) {
-    const unsafeParticipantIds = new Set([...balancesByParticipant].filter(([, balance]) => balance > BigInt(Number.MAX_SAFE_INTEGER) || balance < BigInt(Number.MIN_SAFE_INTEGER)).map(([id]) => id));
-    for (const [id, contributions] of contributionsByEventId) {
-      if ([...contributions.keys()].some((participantId) => unsafeParticipantIds.has(participantId))) overflowEventIds.add(id);
+  for (let index = 0; index < unsafeParticipantQueue.length; index++) {
+    for (const eventId of eventIdsByParticipant.get(unsafeParticipantQueue[index]) ?? []) {
+      if (overflowEventIds.has(eventId)) continue;
+      overflowEventIds.add(eventId);
+      for (const participantId of contributionsByEventId.get(eventId).keys()) {
+        if (!visitedParticipantIds.has(participantId)) {
+          visitedParticipantIds.add(participantId);
+          unsafeParticipantQueue.push(participantId);
+        }
+      }
     }
+  }
+  if (overflowEventIds.size > 0) {
     balancesByParticipant.clear();
     for (const [id, contributions] of contributionsByEventId) {
       if (overflowEventIds.has(id)) continue;
       for (const [participantId, amount] of contributions) addBalance(balancesByParticipant, participantId, amount);
     }
-  }
-  if (overflowEventIds.size > 0) {
     for (const id of [...overflowEventIds].sort()) quarantined.push({ id, reason: "balance-overflow" });
     const retainedEffective = effective.filter((event) => !overflowEventIds.has(event.id));
     effective.splice(0, effective.length, ...retainedEffective);

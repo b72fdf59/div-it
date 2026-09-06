@@ -213,6 +213,42 @@ test("quarantines money events whose combined balances cannot be represented saf
   assert.deepEqual(result.quarantined, [first.id, second.id].map((id) => ({ id, reason: "balance-overflow" })));
 });
 
+test("quarantines an overflowing contribution component in one deterministic pass", () => {
+  const first = settlement({
+    id: "11111111-1111-4111-8111-111111111112",
+    settlementId: "21111111-1111-4111-8111-111111111112",
+    fromParticipantId: "alice",
+    toParticipantId: "bob",
+    amount: Number.MAX_SAFE_INTEGER
+  });
+  const second = settlement({
+    id: "31111111-1111-4111-8111-111111111112",
+    settlementId: "41111111-1111-4111-8111-111111111112",
+    fromParticipantId: "alice",
+    toParticipantId: "bob",
+    amount: Number.MAX_SAFE_INTEGER
+  });
+  const connected = settlement({
+    id: "51111111-1111-4111-8111-111111111112",
+    settlementId: "61111111-1111-4111-8111-111111111112",
+    fromParticipantId: "bob",
+    toParticipantId: "carol",
+    amount: 1
+  });
+  const unrelated = settlement({
+    id: "71111111-1111-4111-8111-111111111112",
+    settlementId: "81111111-1111-4111-8111-111111111112",
+    fromParticipantId: "dave",
+    toParticipantId: "erin",
+    amount: 25
+  });
+  const result = projectLedger(Object.fromEntries([first, second, connected, unrelated].map((event) => [event.id, event])), projectionContext);
+
+  assert.deepEqual(result.balances, { dave: 25, erin: -25 });
+  assert.deepEqual(result.effective, [unrelated]);
+  assert.deepEqual(result.quarantined, [first.id, second.id, connected.id].map((id) => ({ id, reason: "balance-overflow" })));
+});
+
 test("keeps missing-dependency events pending without blocking valid balances", () => {
   const dependent = { ...dinner, dependsOn: ["99999999-9999-4999-8999-999999999999"] };
   const result = projectLedger({ [dependent.id]: dependent, [taxi.id]: taxi }, projectionContext);
