@@ -68,12 +68,24 @@ export function projectLedger(eventsById, context) {
   const parsedEntries = [];
   const variantsById = new Map();
 
+  const isAuthorized = (event) => {
+    try {
+      return context.isEventAuthorized(structuredClone(event)) === true;
+    } catch {
+      return false;
+    }
+  };
+
   for (const [id, rawEvent] of entries) {
     const parsed = parseEvent(rawEvent);
     if (!parsed.ok) {
       const diagnostic = { id, reason: parsed.reason };
-      if (parsed.reason === "unsupported-version" || parsed.reason === "unsupported-event-type") unsupported.push(diagnostic);
-      else quarantined.push(diagnostic);
+      if ((parsed.reason === "unsupported-version" || parsed.reason === "unsupported-event-type") && parsed.event) {
+        if (id !== parsed.event.id) quarantined.push({ id, reason: "event-id-mismatch" });
+        else if (parsed.event.groupId !== context.groupId) quarantined.push({ id, reason: "group-mismatch" });
+        else if (!isAuthorized(parsed.event)) quarantined.push({ id, reason: "unauthenticated" });
+        else unsupported.push(diagnostic);
+      } else quarantined.push(diagnostic);
       continue;
     }
     if (id !== parsed.event.id) {
@@ -96,13 +108,7 @@ export function projectLedger(eventsById, context) {
   for (const [id, variants] of [...variantsById.entries()].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) {
     const authorizedVariants = [];
     for (const event of variants) {
-      let authorized = false;
-      try {
-        authorized = context.isEventAuthorized(structuredClone(event)) === true;
-      } catch {
-        authorized = false;
-      }
-      if (authorized) authorizedVariants.push(event);
+      if (isAuthorized(event)) authorizedVariants.push(event);
       else quarantined.push({ id, reason: "unauthenticated" });
     }
     const contentGroups = new Map();
@@ -381,6 +387,11 @@ export function projectLedger(eventsById, context) {
       }
       contribute(id, event.payload.payerId, event.payload.amount);
       for (const split of event.payload.splits) contribute(id, split.participantId, -split.amount);
+      effective.push(event);
+      continue;
+    }
+    if (event.type === "opening-balances-imported") {
+      for (const balance of event.payload.balances) contribute(id, balance.participantId, balance.amount);
       effective.push(event);
       continue;
     }

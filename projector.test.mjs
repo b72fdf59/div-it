@@ -757,6 +757,43 @@ test("marks projections with unsupported events read-only", () => {
   assert.equal(result.readOnly, true);
 });
 
+test("does not let untrusted unsupported events force read-only mode", () => {
+  const future = { ...taxi, schemaVersion: 2 };
+  const unauthorized = projectLedger({ [future.id]: future }, { ...projectionContext, isEventAuthorized: () => false });
+  const otherGroup = { ...future, groupId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" };
+  const foreign = projectLedger({ [otherGroup.id]: otherGroup }, projectionContext);
+
+  assert.equal(unauthorized.readOnly, false);
+  assert.deepEqual(unauthorized.unsupported, []);
+  assert.deepEqual(unauthorized.quarantined, [{ id: future.id, reason: "unauthenticated" }]);
+  assert.equal(foreign.readOnly, false);
+  assert.deepEqual(foreign.unsupported, []);
+  assert.deepEqual(foreign.quarantined, [{ id: otherGroup.id, reason: "group-mismatch" }]);
+});
+
+test("projects opening balances and keeps them in the audit trail", () => {
+  const imported = {
+    ...structuredClone(dinner),
+    id: "71111111-1111-4111-8111-111111111111",
+    type: "opening-balances-imported",
+    payload: {
+      importId: "81111111-1111-4111-8111-111111111111",
+      currency: "USD",
+      sourceFormat: "splitwise-csv",
+      balances: [
+        { participantId: "alice", amount: 766 },
+        { participantId: "bob", amount: -766 }
+      ]
+    },
+    signature: "signature-opening-balances"
+  };
+  const result = projectLedger({ [imported.id]: imported }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 766, bob: -766 });
+  assert.deepEqual(result.effective, [imported]);
+  assert.deepEqual(result.quarantined, []);
+});
+
 test("quarantines malformed events without blocking valid balances", () => {
   const malformedId = "55555555-5555-4555-8555-555555555555";
   const result = projectLedger({ [dinner.id]: dinner, [malformedId]: { nope: true } }, projectionContext);

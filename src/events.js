@@ -30,8 +30,8 @@ const MAX_EVENT_BYTES = 65_536;
 const MAX_COLLECTION_ENTRIES = 256;
 const MAX_SIGNATURE_LENGTH = 512;
 
-function failure(reason) {
-  return { ok: false, reason };
+function failure(reason, event) {
+  return event === undefined ? { ok: false, reason } : { ok: false, reason, event };
 }
 
 function utf8Length(value) {
@@ -197,8 +197,6 @@ export function parseEvent(raw) {
   if (!hasExactFields(event, ENVELOPE_FIELDS) || !hasExactFields(event.author, AUTHOR_FIELDS)) return failure("invalid-envelope");
   if (!isUuid(event.id) || !isUuid(event.groupId)) return failure("invalid-id");
   if (!Number.isSafeInteger(event.schemaVersion) || !Number.isSafeInteger(event.protocolVersion) || event.schemaVersion < 1 || event.protocolVersion < 1) return failure("invalid-version");
-  if (event.schemaVersion !== 1 || event.protocolVersion !== 1) return failure("unsupported-version");
-  if (!EVENT_TYPE_SET.has(event.type)) return failure("unsupported-event-type");
   if (!AUTHOR_FIELDS.every((field) => isIdentifier(event.author[field]))) return failure("invalid-envelope");
   if (typeof event.createdAt === "string" && event.createdAt.length > 30) return failure("event-too-large");
   if (!isTimestamp(event.createdAt)) return failure("invalid-envelope");
@@ -208,10 +206,18 @@ export function parseEvent(raw) {
   if (typeof event.signature === "string" && event.signature.length > MAX_SIGNATURE_LENGTH) return failure("event-too-large");
   if (typeof event.signature !== "string" || !SIGNATURE.test(event.signature)) return failure("unauthenticated");
 
-  const payloadFailure = validatePayload(event);
-  if (payloadFailure) return payloadFailure;
+  let stable;
+  try {
+    stable = stableEvent(event);
+    if (utf8Length(JSON.stringify(stable)) > MAX_EVENT_BYTES) return failure("event-too-large");
+  } catch {
+    return failure("invalid-payload");
+  }
 
-  const stable = stableEvent(event);
-  if (utf8Length(JSON.stringify(stable)) > MAX_EVENT_BYTES) return failure("event-too-large");
+  if (stable.schemaVersion !== 1 || stable.protocolVersion !== 1) return failure("unsupported-version", stable);
+  if (!EVENT_TYPE_SET.has(stable.type)) return failure("unsupported-event-type", stable);
+
+  const payloadFailure = validatePayload(stable);
+  if (payloadFailure) return payloadFailure;
   return { ok: true, event: stable };
 }
