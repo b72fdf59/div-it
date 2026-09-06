@@ -249,7 +249,7 @@ test("applies exact duplicate event content once", () => {
   assert.deepEqual(result.duplicates, [{ id: dinner.id, reason: "duplicate-ignored", count: 1 }]);
 });
 
-test("applies semantic expense duplicates once and resolves their dependency aliases", () => {
+test("quarantines different envelopes that reuse a logical ID even when their payloads match", () => {
   const alias = { ...structuredClone(dinner), id: "21111111-1111-4111-8111-111111111112", signature: "signature-expense-alias" };
   const revision = revisedExpense({
     id: "51111111-1111-4111-8111-111111111111",
@@ -260,38 +260,11 @@ test("applies semantic expense duplicates once and resolves their dependency ali
   });
   const result = projectLedger({ [revision.id]: revision, [alias.id]: alias, [dinner.id]: dinner }, projectionContext);
 
-  assert.deepEqual(result.balances, { alice: 960, bob: -960 });
-  assert.deepEqual(result.effective.map((event) => event.id), [revision.id]);
-  assert.deepEqual(result.duplicates, [{ id: alias.id, reason: "duplicate-ignored", count: 1 }]);
-});
-
-test("uses a ready semantic alias instead of a lower ID with a missing dependency", () => {
-  const blockedAlias = {
-    ...structuredClone(dinner),
-    id: "01111111-1111-4111-8111-111111111111",
-    dependsOn: ["99999999-9999-4999-8999-999999999999"],
-    signature: "signature-blocked-alias"
-  };
-  const result = projectLedger({ [blockedAlias.id]: blockedAlias, [dinner.id]: dinner }, projectionContext);
-
-  assert.deepEqual(result.balances, { alice: 800, bob: -800 });
-  assert.deepEqual(result.effective.map((event) => event.id), [dinner.id]);
-  assert.deepEqual(result.pending, []);
-  assert.deepEqual(result.duplicates, [{ id: blockedAlias.id, reason: "duplicate-ignored", count: 1 }]);
-});
-
-test("does not create a dependency cycle when semantic aliases reference each other", () => {
-  const alias = {
-    ...structuredClone(dinner),
-    id: "01111111-1111-4111-8111-111111111111",
-    dependsOn: [dinner.id],
-    signature: "signature-self-alias"
-  };
-  const result = projectLedger({ [alias.id]: alias, [dinner.id]: dinner }, projectionContext);
-
-  assert.deepEqual(result.balances, { alice: 800, bob: -800 });
-  assert.deepEqual(result.effective.map((event) => event.id), [alias.id]);
-  assert.deepEqual(result.quarantined, []);
+  assert.deepEqual(result.balances, {});
+  assert.deepEqual(result.effective, []);
+  assert.deepEqual(result.pending.map(({ event }) => event.id), [revision.id]);
+  assert.deepEqual(result.duplicates, []);
+  assert.deepEqual(result.quarantined, [dinner.id, alias.id].sort().map((id) => ({ id, reason: "logical-id-content-collision" })));
 });
 
 test("quarantines conflicting logical expense creators and blocks their dependents", () => {

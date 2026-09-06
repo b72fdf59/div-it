@@ -92,7 +92,7 @@ All money values are integer minor units, never floating-point amounts. `currenc
 
 `expenseId` is the stable logical expense identity. `description` is trimmed, non-empty, and bounded to 500 Unicode characters. `amount` and every split amount are positive safe integers. Split participant IDs are unique and their amounts must sum exactly to `amount`. The payer may be included in the split and pays only that participant's share.
 
-Exactly one logical `expense-created` payload may introduce an `expenseId`. Repeated creator events with different envelope IDs but identical payloads are semantic duplicates: their event IDs are aliases for dependency purposes and the expense contributes once. If creator payloads for one `expenseId` differ, every creator is quarantined as `logical-id-content-collision` and dependent expense events cannot become effective.
+Exactly one `expense-created` envelope may introduce an `expenseId`. Any additional creator with a different envelope ID is quarantined as `logical-id-content-collision`, even when its payload matches. Dependent expense events cannot become effective until the collision is removed from the trusted event set.
 
 ### `expense-revised`
 
@@ -170,7 +170,7 @@ One or more valid reversals of the same settlement are financially equivalent an
 
 An opening balance is a signed participant balance: positive means the participant is owed money; negative means the participant owes money. Each participant appears at most once, every amount is an integer safe value, and the sum must be exactly zero. The import records only the mapped opening balances; it never invents historical expenses. Any source-file fingerprint is metadata outside this version-one payload until its digest algorithm is selected.
 
-`importId` identifies one logical import. Repeated import events with identical payloads contribute once. Different payloads using the same `importId` are quarantined as `logical-id-content-collision`.
+`importId` identifies one logical import. Different envelopes using the same `importId` are quarantined as `logical-id-content-collision`, even when their payloads match.
 
 ### `conflict-resolved`
 
@@ -192,7 +192,7 @@ An opening balance is a signed participant balance: positive means the participa
 
 `supersedesResolutionEventIds` is a sorted array of unique `conflict-resolved` event IDs and every ID it contains must also be in `dependsOn`. It is empty for the first attempt to resolve a revision fork. If concurrent resolutions of the same complete `resolvesEventIds` set choose different branches, none wins and the last uncontested expense remains effective. A later resolution must name every competing resolution in `supersedesResolutionEventIds` and choose one of the original branches. Concurrent resolutions that choose the same branch are semantically equivalent and make that branch effective once. Resolution attempts that name different revision sets do not resolve one another.
 
-`resolutionId` identifies one logical resolution attempt. Repeated resolution events with identical payloads are semantic duplicates. Different payloads using the same `resolutionId` are quarantined as `logical-id-content-collision`.
+`resolutionId` identifies one logical resolution attempt. Different envelopes using the same `resolutionId` are quarantined as `logical-id-content-collision`, even when their payloads match.
 
 ## Projection and delivery rules
 
@@ -216,7 +216,7 @@ Unsupported versions and event types are reported separately from quarantined in
 - If one ID appears with two or more distinct signed contents, it is an `id-content-collision`. No variant with that ID is effective, regardless of arrival order. All variants remain available for diagnostics and audit.
 - A duplicate dependency or duplicate split participant is invalid input, not a second application.
 
-Logical identifiers have an additional collision rule. `expenseId` identifies one expense chain, `settlementId` one settlement and its reversals, `importId` one opening-balance import, and `resolutionId` one resolution attempt. Events that legitimately revise, void, or reverse an existing logical object reuse its logical ID and reference its predecessor. Two creator events with the same logical ID and identical type-specific payload are semantic duplicates and contribute once; their envelope IDs are aliases for dependency checks. If those creator payloads differ, all competing creators are quarantined as `logical-id-content-collision`. This classification is based on the complete set and is independent of arrival order.
+Logical identifiers have an additional collision rule. `expenseId` identifies one expense chain, `settlementId` one settlement and its reversals, `importId` one opening-balance import, and `resolutionId` one resolution attempt. Events that legitimately revise, void, or reverse an existing logical object reuse its logical ID and reference its predecessor. Two creator envelopes with the same logical ID are both quarantined as `logical-id-content-collision`, regardless of whether their payloads match. Only delivery of the same envelope ID and signed content is a duplicate. This classification is based on the complete set and is independent of arrival order.
 
 ### Reordering and missing dependencies
 
@@ -261,7 +261,7 @@ These examples describe the minimum diagnosis surface for validators and tests:
 | Reversal points to a non-settlement | `invalid-reference` | Quarantine |
 | Concurrent or later reversal of an already reversed settlement | `duplicate-reversal-ignored` | Preserve; neutralize once |
 | Two payloads use the same event ID | `id-content-collision` | Quarantine all variants |
-| Different creator payloads reuse one logical ID | `logical-id-content-collision` | Quarantine all competing creators |
+| Different creator envelopes reuse one logical ID | `logical-id-content-collision` | Quarantine all competing creators |
 | Event type is not one of the seven supported types | `unsupported-event-type` | Preserve; read-only if money-affecting |
 | Schema or protocol version is unsupported | `unsupported-version` | Preserve; read-only if money-affecting |
 | Signature is absent or fails verification | `unauthenticated` | Quarantine |

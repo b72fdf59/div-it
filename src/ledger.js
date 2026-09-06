@@ -132,7 +132,6 @@ export function projectLedger(eventsById, context) {
     parsedEntries.push([id, selected]);
   }
 
-  const logicalAliases = new Map();
   const logicalGroups = new Map();
   for (const [id, event] of parsedEntries) {
     const identity = logicalIdentity(event);
@@ -145,53 +144,18 @@ export function projectLedger(eventsById, context) {
   const rejectedLogicalIds = new Set();
   for (const group of logicalGroups.values()) {
     if (group.length < 2) continue;
-    const payloads = new Set(group.map(([, event]) => canonicalJson(event.payload)));
-    if (payloads.size > 1) {
-      for (const [id] of group) {
-        rejectedLogicalIds.add(id);
-        quarantined.push({ id, reason: "logical-id-content-collision" });
-      }
+    for (const [id] of group) {
+      rejectedLogicalIds.add(id);
+      quarantined.push({ id, reason: "logical-id-content-collision" });
     }
   }
-
-  const availableLogicalIds = new Set(parsedEntries.map(([id]) => id).filter((id) => !rejectedLogicalIds.has(id)));
-  for (const group of logicalGroups.values()) {
-    if (group.length < 2 || group.some(([id]) => rejectedLogicalIds.has(id))) continue;
-    const groupIds = new Set(group.map(([id]) => id));
-    const ranked = [...group].sort(([leftId, left], [rightId, right]) => {
-      const rank = (event) => {
-        const externalDependencies = event.dependsOn.filter((id) => !groupIds.has(id));
-        const missing = externalDependencies.filter((id) => !availableLogicalIds.has(id)).length;
-        return [missing, externalDependencies.length, canonicalJson(externalDependencies)];
-      };
-      const leftRank = rank(left);
-      const rightRank = rank(right);
-      for (let index = 0; index < leftRank.length; index++) {
-        if (leftRank[index] < rightRank[index]) return -1;
-        if (leftRank[index] > rightRank[index]) return 1;
-      }
-      return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
-    });
-    const canonicalId = ranked[0][0];
-    for (const [id] of ranked.slice(1)) {
-      logicalAliases.set(id, canonicalId);
-      duplicates.push({ id, reason: "duplicate-ignored", count: 1 });
-    }
-  }
-  parsedEntries.splice(0, parsedEntries.length, ...parsedEntries.filter(([id]) => !rejectedLogicalIds.has(id) && !logicalAliases.has(id)));
-
-  const canonicalEventId = (id) => logicalAliases.get(id) ?? id;
+  parsedEntries.splice(0, parsedEntries.length, ...parsedEntries.filter(([id]) => !rejectedLogicalIds.has(id)));
 
   const eventsByValidId = new Map(parsedEntries);
-  for (const [aliasId, canonicalId] of logicalAliases) eventsByValidId.set(aliasId, eventsByValidId.get(canonicalId));
   const dependentsById = new Map(parsedEntries.map(([id]) => [id, []]));
-  const dependencyIdsByEventId = new Map(parsedEntries.map(([id, event]) => [
-    id,
-    [...new Set(event.dependsOn.map(canonicalEventId))].filter((dependencyId) => dependencyId !== id).sort()
-  ]));
   const blockedByMissing = new Set();
   for (const [id, event] of parsedEntries) {
-    for (const dependencyId of dependencyIdsByEventId.get(id)) {
+    for (const dependencyId of event.dependsOn) {
       if (eventsByValidId.has(dependencyId)) dependentsById.get(dependencyId).push(id);
       else blockedByMissing.add(id);
     }
@@ -211,7 +175,7 @@ export function projectLedger(eventsById, context) {
   const readyQueue = [];
   for (const [id, event] of parsedEntries) {
     if (blockedByMissing.has(id)) continue;
-    const count = dependencyIdsByEventId.get(id).length;
+    const count = event.dependsOn.length;
     unresolvedDependencies.set(id, count);
     if (count === 0) readyQueue.push(id);
   }
@@ -300,7 +264,7 @@ export function projectLedger(eventsById, context) {
   const resolutionGroupById = new Map();
   const resolutionGroups = new Map();
   for (const [id, event] of resolutionEventsById) {
-    const resolvedBranchIds = [...new Set(event.payload.resolvesEventIds.map(canonicalEventId))].sort();
+    const resolvedBranchIds = event.payload.resolvesEventIds;
     const parentId = conflictGroupByBranches.get(canonicalJson(resolvedBranchIds));
     if (!parentId || !resolvedBranchIds.every((branchId) => expenseEventsById.get(branchId).payload.expenseId === event.payload.expenseId)) {
       quarantineResolution(id);
@@ -314,7 +278,7 @@ export function projectLedger(eventsById, context) {
   for (const [id, event] of resolutionEventsById) {
     if (invalidResolutionEventIds.has(id)) continue;
     const parentId = resolutionGroupById.get(id);
-    if (event.payload.supersedesResolutionEventIds.some((resolutionId) => resolutionGroupById.get(canonicalEventId(resolutionId)) !== parentId)) {
+    if (event.payload.supersedesResolutionEventIds.some((resolutionId) => resolutionGroupById.get(resolutionId) !== parentId)) {
       quarantineResolution(id);
     }
   }
@@ -323,10 +287,10 @@ export function projectLedger(eventsById, context) {
   const effectiveResolutionIds = new Set();
   for (const [parentId, resolutionIds] of resolutionGroups) {
     const validResolutionIds = resolutionIds.filter((id) => !invalidResolutionEventIds.has(id));
-    const supersededResolutionIds = new Set(validResolutionIds.flatMap((id) => resolutionEventsById.get(id).payload.supersedesResolutionEventIds.map(canonicalEventId)));
+    const supersededResolutionIds = new Set(validResolutionIds.flatMap((id) => resolutionEventsById.get(id).payload.supersedesResolutionEventIds));
     const maximalResolutionIds = validResolutionIds.filter((id) => !supersededResolutionIds.has(id));
-    const historicalChosenEventIds = new Set(validResolutionIds.map((id) => canonicalEventId(resolutionEventsById.get(id).payload.chosenEventId)));
-    const chosenEventIds = new Set(maximalResolutionIds.map((id) => canonicalEventId(resolutionEventsById.get(id).payload.chosenEventId)));
+    const historicalChosenEventIds = new Set(validResolutionIds.map((id) => resolutionEventsById.get(id).payload.chosenEventId));
+    const chosenEventIds = new Set(maximalResolutionIds.map((id) => resolutionEventsById.get(id).payload.chosenEventId));
     const disputeFullySuperseded = historicalChosenEventIds.size <= 1 || maximalResolutionIds.length === 1;
     if (chosenEventIds.size === 1 && maximalResolutionIds.length > 0 && disputeFullySuperseded) {
       resolvedBranchByParentId.set(parentId, [...chosenEventIds][0]);
@@ -370,7 +334,7 @@ export function projectLedger(eventsById, context) {
   };
   for (const [id, event] of parsedEntries) {
     if (blockedByMissing.has(id)) {
-      const missingDependencyIds = dependencyIdsByEventId.get(id).filter((dependencyId) => !readyEventIds.has(dependencyId));
+      const missingDependencyIds = event.dependsOn.filter((dependencyId) => !readyEventIds.has(dependencyId));
       pending.push({ event, reason: "missing-dependency", missingDependencyIds });
       continue;
     }
