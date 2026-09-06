@@ -793,6 +793,20 @@ test("stops before projecting an excessive number of event envelopes", () => {
   });
 });
 
+test("does not fully materialize an oversized event Map before stopping", () => {
+  class OversizedMap extends Map {
+    *entries() {
+      for (let index = 0; index <= 10_000; index++) yield [`event-${index}`, dinner];
+      throw new Error("read beyond ledger event limit");
+    }
+  }
+
+  const result = projectLedger(new OversizedMap(), projectionContext);
+
+  assert.equal(result.readOnly, true);
+  assert.deepEqual(result.quarantined, [{ id: "ledger", reason: "ledger-too-large" }]);
+});
+
 test("stops before projecting excessive aggregate event bytes", () => {
   const oversizedLedger = new Map();
   const encoded = JSON.stringify(dinner).padEnd(65_536, " ");

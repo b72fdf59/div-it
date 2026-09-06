@@ -10,10 +10,15 @@ export function cents(value) {
 }
 
 function eventEntries(eventsById) {
-  const sources = eventsById instanceof Map
-    ? [...eventsById.entries()]
-    : eventsById && typeof eventsById === "object" && !Array.isArray(eventsById) ? Object.entries(eventsById) : null;
-  if (!sources) throw new TypeError("eventsById must be an object or Map");
+  let sources;
+  if (eventsById instanceof Map) sources = eventsById.entries();
+  else if (eventsById && typeof eventsById === "object" && !Array.isArray(eventsById)) {
+    sources = (function* ownEntries() {
+      for (const id in eventsById) {
+        if (Object.hasOwn(eventsById, id)) yield [id, eventsById[id]];
+      }
+    })();
+  } else throw new TypeError("eventsById must be an object or Map");
 
   const entries = [];
   let encodedBytes = 0;
