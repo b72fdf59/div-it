@@ -361,15 +361,6 @@ export function projectLedger(eventsById, context) {
   }
 
   const reversedSettlementIds = new Set();
-  const contributionsByEventId = new Map();
-  const eventIdsByParticipant = new Map();
-  const contribute = (eventId, participantId, amount) => {
-    addBalance(balancesByParticipant, participantId, amount);
-    if (!contributionsByEventId.has(eventId)) contributionsByEventId.set(eventId, new Map());
-    addBalance(contributionsByEventId.get(eventId), participantId, amount);
-    if (!eventIdsByParticipant.has(participantId)) eventIdsByParticipant.set(participantId, new Set());
-    eventIdsByParticipant.get(participantId).add(eventId);
-  };
   for (const [id, event] of parsedEntries) {
     if (blockedByMissing.has(id)) {
       const missingDependencyIds = event.dependsOn.filter((dependencyId) => !readyEventIds.has(dependencyId));
@@ -387,19 +378,19 @@ export function projectLedger(eventsById, context) {
         effective.push(event);
         continue;
       }
-      contribute(id, event.payload.payerId, event.payload.amount);
-      for (const split of event.payload.splits) contribute(id, split.participantId, -split.amount);
+      addBalance(balancesByParticipant, event.payload.payerId, event.payload.amount);
+      for (const split of event.payload.splits) addBalance(balancesByParticipant, split.participantId, -split.amount);
       effective.push(event);
       continue;
     }
     if (event.type === "opening-balances-imported") {
-      for (const balance of event.payload.balances) contribute(id, balance.participantId, balance.amount);
+      for (const balance of event.payload.balances) addBalance(balancesByParticipant, balance.participantId, balance.amount);
       effective.push(event);
       continue;
     }
     if (event.type === "settlement-recorded") {
-      contribute(id, event.payload.fromParticipantId, event.payload.amount);
-      contribute(id, event.payload.toParticipantId, -event.payload.amount);
+      addBalance(balancesByParticipant, event.payload.fromParticipantId, event.payload.amount);
+      addBalance(balancesByParticipant, event.payload.toParticipantId, -event.payload.amount);
       effective.push(event);
       continue;
     }
@@ -416,49 +407,27 @@ export function projectLedger(eventsById, context) {
         continue;
       }
       reversedSettlementIds.add(event.payload.settlementId);
-      contribute(id, target.payload.fromParticipantId, -target.payload.amount);
-      contribute(id, target.payload.toParticipantId, target.payload.amount);
+      addBalance(balancesByParticipant, target.payload.fromParticipantId, -target.payload.amount);
+      addBalance(balancesByParticipant, target.payload.toParticipantId, target.payload.amount);
       effective.push(event);
       continue;
     }
   }
 
-  const unsafeParticipantQueue = [...balancesByParticipant]
-    .filter(([, balance]) => balance > BigInt(Number.MAX_SAFE_INTEGER) || balance < BigInt(Number.MIN_SAFE_INTEGER))
-    .map(([id]) => id);
-  const visitedParticipantIds = new Set(unsafeParticipantQueue);
-  const overflowEventIds = new Set();
-  for (let index = 0; index < unsafeParticipantQueue.length; index++) {
-    for (const eventId of eventIdsByParticipant.get(unsafeParticipantQueue[index]) ?? []) {
-      if (overflowEventIds.has(eventId)) continue;
-      overflowEventIds.add(eventId);
-      for (const participantId of contributionsByEventId.get(eventId).keys()) {
-        if (!visitedParticipantIds.has(participantId)) {
-          visitedParticipantIds.add(participantId);
-          unsafeParticipantQueue.push(participantId);
-        }
-      }
-    }
-  }
-  if (overflowEventIds.size > 0) {
-    balancesByParticipant.clear();
-    for (const [id, contributions] of contributionsByEventId) {
-      if (overflowEventIds.has(id)) continue;
-      for (const [participantId, amount] of contributions) addBalance(balancesByParticipant, participantId, amount);
-    }
-    for (const id of [...overflowEventIds].sort()) quarantined.push({ id, reason: "balance-overflow" });
-    const retainedEffective = effective.filter((event) => !overflowEventIds.has(event.id));
-    effective.splice(0, effective.length, ...retainedEffective);
-  }
+  const balanceOverflow = [...balancesByParticipant.values()]
+    .some((balance) => balance > BigInt(Number.MAX_SAFE_INTEGER) || balance < BigInt(Number.MIN_SAFE_INTEGER));
+  if (balanceOverflow) quarantined.push({ id: "ledger", reason: "balance-overflow" });
 
-  const balances = Object.fromEntries([...balancesByParticipant.entries()].sort(compareIds).map(([id, balance]) => [id, Number(balance)]));
+  const balances = balanceOverflow
+    ? {}
+    : Object.fromEntries([...balancesByParticipant.entries()].sort(compareIds).map(([id, balance]) => [id, Number(balance)]));
   const total = Object.values(balances).reduce((sum, balance) => sum + BigInt(balance), 0n);
   if (total !== 0n) throw new Error("non-zero-sum");
 
   conflicting.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : left.reason < right.reason ? -1 : left.reason > right.reason ? 1 : 0);
   quarantined.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : left.reason < right.reason ? -1 : left.reason > right.reason ? 1 : 0);
 
-  return { balances, effective, pending, conflicting, quarantined, unsupported, readOnly: unsupported.length > 0, duplicates, ignored };
+  return { balances, effective, pending, conflicting, quarantined, unsupported, readOnly: unsupported.length > 0 || balanceOverflow, duplicates, ignored };
 }
 
 export function formatCents(value, currency = "USD") {

@@ -189,7 +189,7 @@ test("uses overflow-safe arithmetic when later events return balances to a safe 
   assert.deepEqual(result.quarantined, []);
 });
 
-test("quarantines money events whose combined balances cannot be represented safely", () => {
+test("makes an unrepresentable final balance read-only without blaming valid events", () => {
   const first = expense({
     id: "11111111-1111-4111-8111-111111111112",
     expenseId: "21111111-1111-4111-8111-111111111112",
@@ -209,11 +209,12 @@ test("quarantines money events whose combined balances cannot be represented saf
   const result = projectLedger({ [second.id]: second, [first.id]: first }, projectionContext);
 
   assert.deepEqual(result.balances, {});
-  assert.deepEqual(result.effective, []);
-  assert.deepEqual(result.quarantined, [first.id, second.id].map((id) => ({ id, reason: "balance-overflow" })));
+  assert.deepEqual(result.effective, [first, second]);
+  assert.deepEqual(result.quarantined, [{ id: "ledger", reason: "balance-overflow" }]);
+  assert.equal(result.readOnly, true);
 });
 
-test("quarantines an overflowing contribution component in one deterministic pass", () => {
+test("preserves every valid event when the exact final balance is unrepresentable", () => {
   const first = settlement({
     id: "11111111-1111-4111-8111-111111111112",
     settlementId: "21111111-1111-4111-8111-111111111112",
@@ -244,9 +245,10 @@ test("quarantines an overflowing contribution component in one deterministic pas
   });
   const result = projectLedger(Object.fromEntries([first, second, connected, unrelated].map((event) => [event.id, event])), projectionContext);
 
-  assert.deepEqual(result.balances, { dave: 25, erin: -25 });
-  assert.deepEqual(result.effective, [unrelated]);
-  assert.deepEqual(result.quarantined, [first.id, second.id, connected.id].map((id) => ({ id, reason: "balance-overflow" })));
+  assert.deepEqual(result.balances, {});
+  assert.deepEqual(result.effective, [first, second, connected, unrelated]);
+  assert.deepEqual(result.quarantined, [{ id: "ledger", reason: "balance-overflow" }]);
+  assert.equal(result.readOnly, true);
 });
 
 test("keeps missing-dependency events pending without blocking valid balances", () => {
