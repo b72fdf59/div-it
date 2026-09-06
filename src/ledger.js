@@ -23,9 +23,7 @@ function compareIds([left], [right]) {
 }
 
 function addBalance(balancesByParticipant, participantId, amount) {
-  const next = (balancesByParticipant.get(participantId) ?? 0) + amount;
-  if (!Number.isSafeInteger(next)) throw new RangeError("balance-overflow");
-  balancesByParticipant.set(participantId, next);
+  balancesByParticipant.set(participantId, (balancesByParticipant.get(participantId) ?? 0n) + BigInt(amount));
 }
 
 function canonicalJson(value) {
@@ -147,10 +145,29 @@ export function projectLedger(eventsById, context) {
         rejectedLogicalIds.add(id);
         quarantined.push({ id, reason: "logical-id-content-collision" });
       }
-      continue;
     }
-    const canonicalId = group[0][0];
-    for (const [id] of group.slice(1)) {
+  }
+
+  const availableLogicalIds = new Set(parsedEntries.map(([id]) => id).filter((id) => !rejectedLogicalIds.has(id)));
+  for (const group of logicalGroups.values()) {
+    if (group.length < 2 || group.some(([id]) => rejectedLogicalIds.has(id))) continue;
+    const groupIds = new Set(group.map(([id]) => id));
+    const ranked = [...group].sort(([leftId, left], [rightId, right]) => {
+      const rank = (event) => {
+        const externalDependencies = event.dependsOn.filter((id) => !groupIds.has(id));
+        const missing = externalDependencies.filter((id) => !availableLogicalIds.has(id)).length;
+        return [missing, externalDependencies.length, canonicalJson(externalDependencies)];
+      };
+      const leftRank = rank(left);
+      const rightRank = rank(right);
+      for (let index = 0; index < leftRank.length; index++) {
+        if (leftRank[index] < rightRank[index]) return -1;
+        if (leftRank[index] > rightRank[index]) return 1;
+      }
+      return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+    });
+    const canonicalId = ranked[0][0];
+    for (const [id] of ranked.slice(1)) {
       logicalAliases.set(id, canonicalId);
       duplicates.push({ id, reason: "duplicate-ignored", count: 1 });
     }
@@ -164,7 +181,7 @@ export function projectLedger(eventsById, context) {
   const dependentsById = new Map(parsedEntries.map(([id]) => [id, []]));
   const dependencyIdsByEventId = new Map(parsedEntries.map(([id, event]) => [
     id,
-    [...new Set(event.dependsOn.map(canonicalEventId))].sort()
+    [...new Set(event.dependsOn.map(canonicalEventId))].filter((dependencyId) => dependencyId !== id).sort()
   ]));
   const blockedByMissing = new Set();
   for (const [id, event] of parsedEntries) {
@@ -339,6 +356,12 @@ export function projectLedger(eventsById, context) {
   }
 
   const reversedSettlementIds = new Set();
+  const contributionsByEventId = new Map();
+  const contribute = (eventId, participantId, amount) => {
+    addBalance(balancesByParticipant, participantId, amount);
+    if (!contributionsByEventId.has(eventId)) contributionsByEventId.set(eventId, new Map());
+    addBalance(contributionsByEventId.get(eventId), participantId, amount);
+  };
   for (const [id, event] of parsedEntries) {
     if (blockedByMissing.has(id)) {
       const missingDependencyIds = dependencyIdsByEventId.get(id).filter((dependencyId) => !readyEventIds.has(dependencyId));
@@ -356,14 +379,14 @@ export function projectLedger(eventsById, context) {
         effective.push(event);
         continue;
       }
-      addBalance(balancesByParticipant, event.payload.payerId, event.payload.amount);
-      for (const split of event.payload.splits) addBalance(balancesByParticipant, split.participantId, -split.amount);
+      contribute(id, event.payload.payerId, event.payload.amount);
+      for (const split of event.payload.splits) contribute(id, split.participantId, -split.amount);
       effective.push(event);
       continue;
     }
     if (event.type === "settlement-recorded") {
-      addBalance(balancesByParticipant, event.payload.fromParticipantId, event.payload.amount);
-      addBalance(balancesByParticipant, event.payload.toParticipantId, -event.payload.amount);
+      contribute(id, event.payload.fromParticipantId, event.payload.amount);
+      contribute(id, event.payload.toParticipantId, -event.payload.amount);
       effective.push(event);
       continue;
     }
@@ -380,14 +403,32 @@ export function projectLedger(eventsById, context) {
         continue;
       }
       reversedSettlementIds.add(event.payload.settlementId);
-      addBalance(balancesByParticipant, target.payload.fromParticipantId, -target.payload.amount);
-      addBalance(balancesByParticipant, target.payload.toParticipantId, target.payload.amount);
+      contribute(id, target.payload.fromParticipantId, -target.payload.amount);
+      contribute(id, target.payload.toParticipantId, target.payload.amount);
       effective.push(event);
       continue;
     }
   }
 
-  const balances = Object.fromEntries([...balancesByParticipant.entries()].sort(compareIds));
+  const overflowEventIds = new Set();
+  while ([...balancesByParticipant.values()].some((balance) => balance > BigInt(Number.MAX_SAFE_INTEGER) || balance < BigInt(Number.MIN_SAFE_INTEGER))) {
+    const unsafeParticipantIds = new Set([...balancesByParticipant].filter(([, balance]) => balance > BigInt(Number.MAX_SAFE_INTEGER) || balance < BigInt(Number.MIN_SAFE_INTEGER)).map(([id]) => id));
+    for (const [id, contributions] of contributionsByEventId) {
+      if ([...contributions.keys()].some((participantId) => unsafeParticipantIds.has(participantId))) overflowEventIds.add(id);
+    }
+    balancesByParticipant.clear();
+    for (const [id, contributions] of contributionsByEventId) {
+      if (overflowEventIds.has(id)) continue;
+      for (const [participantId, amount] of contributions) addBalance(balancesByParticipant, participantId, amount);
+    }
+  }
+  if (overflowEventIds.size > 0) {
+    for (const id of [...overflowEventIds].sort()) quarantined.push({ id, reason: "balance-overflow" });
+    const retainedEffective = effective.filter((event) => !overflowEventIds.has(event.id));
+    effective.splice(0, effective.length, ...retainedEffective);
+  }
+
+  const balances = Object.fromEntries([...balancesByParticipant.entries()].sort(compareIds).map(([id, balance]) => [id, Number(balance)]));
   const total = Object.values(balances).reduce((sum, balance) => sum + BigInt(balance), 0n);
   if (total !== 0n) throw new Error("non-zero-sum");
 

@@ -161,6 +161,58 @@ test("always returns zero-sum balances", () => {
   });
 });
 
+test("uses overflow-safe arithmetic when later events return balances to a safe range", () => {
+  const maximumExpense = expense({
+    id: "11111111-1111-4111-8111-111111111112",
+    expenseId: "21111111-1111-4111-8111-111111111112",
+    description: "Maximum safe expense",
+    payerId: "alice",
+    amount: Number.MAX_SAFE_INTEGER,
+    splits: [{ participantId: "bob", amount: Number.MAX_SAFE_INTEGER }]
+  });
+  const payment = settlement({
+    id: "51111111-1111-4111-8111-111111111112",
+    settlementId: "61111111-1111-4111-8111-111111111112",
+    fromParticipantId: "bob",
+    toParticipantId: "alice",
+    amount: Number.MAX_SAFE_INTEGER
+  });
+  const undo = reversal({
+    id: "31111111-1111-4111-8111-111111111112",
+    settlementId: payment.payload.settlementId,
+    reversesEventId: payment.id
+  });
+  const result = projectLedger({ [payment.id]: payment, [undo.id]: undo, [maximumExpense.id]: maximumExpense }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: Number.MAX_SAFE_INTEGER, bob: -Number.MAX_SAFE_INTEGER });
+  assert.deepEqual(result.effective.map((event) => event.id), [maximumExpense.id, undo.id, payment.id]);
+  assert.deepEqual(result.quarantined, []);
+});
+
+test("quarantines money events whose combined balances cannot be represented safely", () => {
+  const first = expense({
+    id: "11111111-1111-4111-8111-111111111112",
+    expenseId: "21111111-1111-4111-8111-111111111112",
+    description: "First maximum expense",
+    payerId: "alice",
+    amount: Number.MAX_SAFE_INTEGER,
+    splits: [{ participantId: "bob", amount: Number.MAX_SAFE_INTEGER }]
+  });
+  const second = expense({
+    id: "31111111-1111-4111-8111-111111111112",
+    expenseId: "41111111-1111-4111-8111-111111111112",
+    description: "Second maximum expense",
+    payerId: "alice",
+    amount: Number.MAX_SAFE_INTEGER,
+    splits: [{ participantId: "bob", amount: Number.MAX_SAFE_INTEGER }]
+  });
+  const result = projectLedger({ [second.id]: second, [first.id]: first }, projectionContext);
+
+  assert.deepEqual(result.balances, {});
+  assert.deepEqual(result.effective, []);
+  assert.deepEqual(result.quarantined, [first.id, second.id].map((id) => ({ id, reason: "balance-overflow" })));
+});
+
 test("keeps missing-dependency events pending without blocking valid balances", () => {
   const dependent = { ...dinner, dependsOn: ["99999999-9999-4999-8999-999999999999"] };
   const result = projectLedger({ [dependent.id]: dependent, [taxi.id]: taxi }, projectionContext);
@@ -211,6 +263,35 @@ test("applies semantic expense duplicates once and resolves their dependency ali
   assert.deepEqual(result.balances, { alice: 960, bob: -960 });
   assert.deepEqual(result.effective.map((event) => event.id), [revision.id]);
   assert.deepEqual(result.duplicates, [{ id: alias.id, reason: "duplicate-ignored", count: 1 }]);
+});
+
+test("uses a ready semantic alias instead of a lower ID with a missing dependency", () => {
+  const blockedAlias = {
+    ...structuredClone(dinner),
+    id: "01111111-1111-4111-8111-111111111111",
+    dependsOn: ["99999999-9999-4999-8999-999999999999"],
+    signature: "signature-blocked-alias"
+  };
+  const result = projectLedger({ [blockedAlias.id]: blockedAlias, [dinner.id]: dinner }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 800, bob: -800 });
+  assert.deepEqual(result.effective.map((event) => event.id), [dinner.id]);
+  assert.deepEqual(result.pending, []);
+  assert.deepEqual(result.duplicates, [{ id: blockedAlias.id, reason: "duplicate-ignored", count: 1 }]);
+});
+
+test("does not create a dependency cycle when semantic aliases reference each other", () => {
+  const alias = {
+    ...structuredClone(dinner),
+    id: "01111111-1111-4111-8111-111111111111",
+    dependsOn: [dinner.id],
+    signature: "signature-self-alias"
+  };
+  const result = projectLedger({ [alias.id]: alias, [dinner.id]: dinner }, projectionContext);
+
+  assert.deepEqual(result.balances, { alice: 800, bob: -800 });
+  assert.deepEqual(result.effective.map((event) => event.id), [alias.id]);
+  assert.deepEqual(result.quarantined, []);
 });
 
 test("quarantines conflicting logical expense creators and blocks their dependents", () => {
