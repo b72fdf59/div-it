@@ -54,6 +54,7 @@ export function projectLedger(eventsById, context) {
   const balancesByParticipant = new Map();
   const effective = [];
   const pending = [];
+  const conflicting = [];
   const quarantined = [];
   const unsupported = [];
   const duplicates = [];
@@ -222,7 +223,7 @@ export function projectLedger(eventsById, context) {
   const quarantineResolution = (id, reason = "invalid-resolution") => {
     if (!invalidResolutionEventIds.has(id)) {
       invalidResolutionEventIds.add(id);
-      quarantined.push({ id, reason });
+      (reason === "conflicting-resolution" ? conflicting : quarantined).push({ id, reason });
     }
   };
   const resolutionGroupById = new Map();
@@ -269,7 +270,7 @@ export function projectLedger(eventsById, context) {
       const id = queue[index];
       if (invalidExpenseEventIds.has(id) || conflictingExpenseEventIds.has(id)) continue;
       conflictingExpenseEventIds.add(id);
-      if (report) quarantined.push({ id, reason: "conflicting-revision" });
+      if (report) conflicting.push({ id, reason: "conflicting-revision" });
       queue.push(...(childrenByParentId.get(id) ?? []));
     }
   };
@@ -340,9 +341,10 @@ export function projectLedger(eventsById, context) {
   const total = Object.values(balances).reduce((sum, balance) => sum + BigInt(balance), 0n);
   if (total !== 0n) throw new Error("non-zero-sum");
 
+  conflicting.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : left.reason < right.reason ? -1 : left.reason > right.reason ? 1 : 0);
   quarantined.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : left.reason < right.reason ? -1 : left.reason > right.reason ? 1 : 0);
 
-  return { balances, effective, pending, quarantined, unsupported, readOnly: unsupported.length > 0, duplicates, ignored };
+  return { balances, effective, pending, conflicting, quarantined, unsupported, readOnly: unsupported.length > 0, duplicates, ignored };
 }
 
 export function formatCents(value, currency = "USD") {
