@@ -43,7 +43,7 @@ Status meanings:
 
 ### DIV-001 — Establish the unit-test command
 
-- Status: READY
+- Status: DONE
 - Depends on: none
 - Deliverable: Convert the existing ledger check to Node's built-in test runner and add a non-watch npm test command. Do not change ledger behavior.
 - Likely files: package.json, ledger.test.mjs
@@ -54,7 +54,7 @@ Status meanings:
 
 ### DIV-002 — Add browser-test scaffolding
 
-- Status: READY
+- Status: DONE
 - Depends on: none
 - Deliverable: Add the smallest browser-test setup suitable for the Vite app, a package script, and one page-load test. Do not redesign the UI.
 - Likely files: package.json, package-lock.json, browser-test configuration, one browser test
@@ -66,7 +66,7 @@ Status meanings:
 
 ### DIV-003 — Specify the version-one event format
 
-- Status: REVIEW
+- Status: DONE
 - Depends on: none
 - Deliverable: Draft an ADR that turns the roadmap event contract into exact envelope and payload schemas. Include event IDs, schema/protocol versions, participant/device attribution fields, dependency references, and canonical signed-content requirements. Cryptographic algorithm selection remains deferred.
 - Likely files: docs/adr/0001-event-format.md
@@ -79,7 +79,7 @@ Status meanings:
 
 ### DIV-004 — Cover existing ledger behavior
 
-- Status: BLOCKED
+- Status: DONE
 - Depends on: DIV-001
 - Deliverable: Add focused tests for cents, makeExpense, balances, and settlementPlan without changing production behavior.
 - Likely files: ledger.test.mjs
@@ -90,7 +90,7 @@ Status meanings:
 
 ### DIV-005 — Protect add-expense behavior in a browser
 
-- Status: BLOCKED
+- Status: DONE
 - Depends on: DIV-002
 - Deliverable: Add two people, submit an equal-split expense, and assert activity and balances through the browser.
 - Likely files: browser test only; production files only if the regression reappears
@@ -101,7 +101,7 @@ Status meanings:
 
 ### DIV-006 — Test exact split, reload, and backup round-trip
 
-- Status: BLOCKED
+- Status: DONE
 - Depends on: DIV-005
 - Deliverable: Extend browser coverage for exact splits, persistence after reload, JSON export, and import into a clean context.
 - Likely files: browser tests and narrow test helpers
@@ -112,7 +112,7 @@ Status meanings:
 
 ### DIV-007 — Extract approved design tokens
 
-- Status: BLOCKED
+- Status: DONE
 - Depends on: DIV-002
 - Deliverable: Move the approved calm dark/light palette, typography, spacing, radii, and semantic colors into production CSS variables. Do not change information architecture yet.
 - Source: docs/design/calm-mobile-mock.html
@@ -127,7 +127,7 @@ Status meanings:
 
 ### DIV-010 — Validate event envelopes
 
-- Status: BLOCKED
+- Status: DONE
 - Depends on: DIV-003, DIV-004
 - Deliverable: Implement pure parsing and validation for the approved structural event envelope. Signature verification is deferred to the identity phase.
 - Likely files: new src/events.js and focused tests
@@ -138,7 +138,7 @@ Status meanings:
 
 ### DIV-011 — Project created expenses
 
-- Status: BLOCKED
+- Status: DONE
 - Depends on: DIV-010
 - Deliverable: Add a pure projectLedger(eventsById) path for expense-created events.
 - Likely files: src/ledger.js, event/projector tests
@@ -149,7 +149,7 @@ Status meanings:
 
 ### DIV-012 — Handle duplicates and missing dependencies
 
-- Status: BLOCKED
+- Status: DONE
 - Depends on: DIV-011
 - Deliverable: Add projector behavior and tests for exact duplicate events, ID/content collisions, and unavailable dependencies.
 - Acceptance:
@@ -160,7 +160,7 @@ Status meanings:
 
 ### DIV-013 — Project settlements and reversals
 
-- Status: BLOCKED
+- Status: DONE
 - Depends on: DIV-012
 - Deliverable: Add settlement-recorded and settlement-reversed semantics.
 - Acceptance:
@@ -170,7 +170,7 @@ Status meanings:
 
 ### DIV-014 — Project expense revisions and voids
 
-- Status: BLOCKED
+- Status: DONE
 - Depends on: DIV-013
 - Deliverable: Add uncontested expense-revised and expense-voided chains.
 - Acceptance:
@@ -181,7 +181,7 @@ Status meanings:
 
 ### DIV-015 — Detect and resolve concurrent revisions
 
-- Status: BLOCKED
+- Status: DONE
 - Depends on: DIV-014
 - Deliverable: Detect sibling revisions of one base and implement conflict-resolved semantics.
 - Acceptance:
@@ -192,7 +192,7 @@ Status meanings:
 
 ### DIV-016 — Return structured projection diagnostics
 
-- Status: BLOCKED
+- Status: DONE
 - Depends on: DIV-015
 - Deliverable: Return separate effective, pending, conflicting, quarantined, and unsupported collections with stable reason codes.
 - Acceptance:
@@ -202,7 +202,7 @@ Status meanings:
 
 ### DIV-017 — Add property tests
 
-- Status: BLOCKED
+- Status: DONE
 - Depends on: DIV-016
 - Deliverable: Generate bounded event sets and permutations to test zero-sum balances, idempotence, and order independence.
 - Likely files: projector property tests; one lightweight test dependency only if justified

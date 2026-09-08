@@ -17,10 +17,13 @@ Install dependencies once, then run:
 
 ```sh
 npm install
+npx playwright install firefox
 npm run dev
 ```
 
 Open URL Vite prints. Build release files with `npm run build`.
+
+Run the headless browser smoke test with `npm run test:browser`. It starts a local Vite server automatically and uses Playwright's pinned Firefox runtime.
 
 For local development, seed a three-person Seoul trip in browser DevTools after opening the app:
 
