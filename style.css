@@ -83,6 +83,7 @@ h2 { font-size: 1.2rem; }
 .eyebrow { color: var(--positive); font-size: .75rem; font-weight: 800; letter-spacing: .12em; }
 .grid { display: grid; gap: var(--space-4); grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card); box-shadow: var(--shadow); margin: var(--space-4) 0; padding: var(--space-5); }
+.people-card form { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 label, fieldset { display: block; margin: var(--space-3) 0; }
 input, select, button { font: inherit; padding: var(--space-2) var(--space-3); }
 input, select { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-control); color: var(--ink); width: 100%; }

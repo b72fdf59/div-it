@@ -240,6 +240,8 @@ Every effective event contributes a net zero balance:
 
 The projector must assert this invariant in tests and quarantine any event or event combination that would violate it.
 
+Projection uses exact integer arithmetic internally. If a valid final participant balance exceeds JavaScript's safe-integer range, the projector preserves every valid event, withholds numeric balances, reports one ledger-level `balance-overflow` diagnostic, and becomes read-only. It does not guess which individually valid events caused an aggregate overflow.
+
 ## Automerge boundary
 
 The domain representation is the plain event envelope above. Automerge may store it as an ID-keyed map, replicate changes, persist updates, and notify the application that new raw events are available. It must not be the source of event ordering, signature content, revision winner selection, or computed balances.

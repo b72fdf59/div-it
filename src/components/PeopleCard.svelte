@@ -10,7 +10,7 @@
   }
 </script>
 
-<section class="card">
+<section class="card people-card">
   <h2>People</h2>
   <form onsubmit={(event) => { event.preventDefault(); submit(); }}>
     <input bind:value={name} placeholder="Name" aria-label="Person name">
