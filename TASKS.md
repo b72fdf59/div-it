@@ -202,7 +202,7 @@ Status meanings:
 
 ### DIV-017 — Add property tests
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-016
 - Deliverable: Generate bounded event sets and permutations to test zero-sum balances, idempotence, and order independence.
 - Likely files: projector property tests; one lightweight test dependency only if justified
