@@ -5,7 +5,7 @@ import { legacyGroup } from "./legacy.js";
 import { makeExpense } from "./ledger.js";
 import { parseEvent } from "./events.js";
 import { conflictResolutionEnvelope, expenseChangeEnvelope, expenseConflictReviews, expenseEnvelope, groupIdFromDocumentId, projectGroup, settlementEnvelope } from "./prototype-events.js";
-import { appendStoredEvent, eventMapFromArray, eventsFromDocument } from "./event-store.js";
+import { appendStoredEvent, eventMapFromArray, eventsFromDocument, migrateEventStore, needsEventStoreMigration } from "./event-store.js";
 
 const GROUP_ID_KEY = "div-it-group-id";
 const emptyGroup = () => ({ name: "My group", currency: "USD", people: [], events: [], eventsById: {} });
@@ -82,6 +82,7 @@ function snapshotGroup(document) {
   const snapshot = structuredClone(document);
   snapshot.events = eventsFromDocument(document);
   delete snapshot.eventsById;
+  delete snapshot.eventStoreFormatVersion;
   return snapshot;
 }
 
@@ -129,6 +130,10 @@ export async function openGroup(onSnapshot) {
   });
   const documentId = localStorage.getItem(GROUP_ID_KEY);
   const handle = documentId ? await repo.find(documentId) : repo.create((await legacyGroup()) || emptyGroup());
+
+  if (needsEventStoreMigration(handle.doc())) {
+    handle.change((document) => migrateEventStore(document));
+  }
 
   const snapshot = snapshotGroup(handle.doc());
   const eventGroups = inspectGroupIds(snapshot.events);

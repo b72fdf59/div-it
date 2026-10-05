@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as Automerge from "@automerge/automerge";
 import { auditEntries } from "./src/audit.js";
-import { appendStoredEvent, eventMapFromArray, eventsFromDocument } from "./src/event-store.js";
+import { appendStoredEvent, eventMapFromArray, eventsFromDocument, migrateEventStore, needsEventStoreMigration } from "./src/event-store.js";
+import { canonicalEventContent } from "./src/ledger.js";
 import { projectGroup } from "./src/prototype-events.js";
 
 const firstId = "11111111-1111-4111-8111-111111111111";
@@ -167,4 +168,94 @@ test("array migration preserves malformed records and hostile IDs for quarantine
   const malformed = [null, ["raw", "array"], { id: "__proto__", invalid: true }, { invalid: true }, { kind: "event", value: "ordinary raw data" }];
   const doc = initial(malformed);
   assert.deepEqual(new Set(eventsFromDocument(doc).map((event) => JSON.stringify(event))), new Set(malformed.map((event) => JSON.stringify(event))));
+});
+
+test("migration copies mixed legacy and versioned arrays without rewriting any source record", () => {
+  const oldExpense = { id: firstId, type: "expense", description: "Legacy", amount: 1234, payerId: "alice",
+    splits: [{ personId: "alice", amount: 617 }, { personId: "bob", amount: 617 }], createdAt: "2020-01-02T03:04:05.000Z", extra: "preserve me" };
+  const signed = validExpense(secondId, "Signed versioned expense");
+  signed.signature = "keep-byte-for-byte-signature";
+  const unsupported = { ...validExpense("33333333-3333-4333-8333-333333333333", "Future schema"), schemaVersion: 8,
+    payload: { ...validExpense("33333333-3333-4333-8333-333333333333").payload, extension: { exact: [1, 2, 3] } }, signature: "unknown-signature" };
+  const raw = [oldExpense, signed, unsupported, { noId: true, nested: { keep: null } }];
+  let doc = Automerge.from({ name: "Old trip", currency: "USD", people: [], events: raw });
+  const before = eventsFromDocument(doc);
+  assert.equal(needsEventStoreMigration(doc), true);
+  doc = Automerge.change(doc, (draft) => { assert.equal(migrateEventStore(draft), true); });
+  assert.deepEqual(doc.events, raw);
+  assert.deepEqual(eventsFromDocument(doc), before);
+  assert.equal(doc.eventStoreFormatVersion, 1);
+  assert.equal(needsEventStoreMigration(doc), false);
+  const heads = Automerge.getHeads(doc);
+  doc = Automerge.change(doc, (draft) => { assert.equal(migrateEventStore(draft), false); });
+  assert.deepEqual(Automerge.getHeads(doc), heads);
+  const serialized = Object.values(doc.eventsById).map((value) => value.toString());
+  for (const event of raw) assert.ok(serialized.some((value) => canonicalEventContent(JSON.parse(value)) === canonicalEventContent(event)));
+  const projection = projectGroup({ groupId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", currency: "USD",
+    people: [{ id: "alice" }, { id: "bob" }], events: eventsFromDocument(doc) });
+  assert.ok(projection.unsupported.some(({ id }) => id === unsupported.id));
+  assert.ok(projection.quarantined.length);
+});
+
+test("partial migration retries copy only missing records and preserve collisions", () => {
+  const one = validExpense(firstId, "First raw variant");
+  const two = { ...one, payload: { ...one.payload, description: "Second raw variant" }, signature: "second-signature" };
+  const legacy = { id: secondId, type: "expense", description: "Old", amount: 1200, payerId: "alice",
+    splits: [{ personId: "alice", amount: 600 }, { personId: "bob", amount: 600 }] };
+  let doc = Automerge.from({ events: [one, two, legacy], eventsById: eventMapFromArray([one]) });
+  doc = Automerge.change(doc, (draft) => { assert.equal(migrateEventStore(draft), true); });
+  const events = eventsFromDocument(doc);
+  assert.deepEqual(eventsFromDocument(Automerge.load(Automerge.save(doc))), events);
+  for (const raw of [one, two, legacy]) assert.ok(events.some((event) => canonicalEventContent(event) === canonicalEventContent(raw)));
+  const projection = projectGroup({ groupId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", currency: "USD",
+    people: [{ id: "alice" }, { id: "bob" }], events });
+  assert.ok(projection.quarantined.some(({ id, reason }) => id === firstId && reason === "id-content-collision"));
+  assert.equal(needsEventStoreMigration(doc), false);
+});
+
+test("a legacy replica append after migration remains visible and is copied on the next open", () => {
+  const first = { id: firstId, type: "expense", description: "Before migration", amount: 1000, payerId: "alice",
+    splits: [{ personId: "alice", amount: 500 }, { personId: "bob", amount: 500 }] };
+  const late = { id: secondId, type: "expense-created", description: "Old client append", amount: 800, payerId: "bob",
+    splits: [{ personId: "alice", amount: 400 }, { personId: "bob", amount: 400 }] };
+  let migrated = Automerge.change(Automerge.from({ events: [first] }), (draft) => { migrateEventStore(draft); });
+  const oldReplica = Automerge.change(Automerge.clone(migrated), (draft) => { draft.events.push(late); });
+  assert.deepEqual(new Set(eventsFromDocument(oldReplica).map(({ id }) => id)), new Set([firstId, secondId]));
+  const reopened = Automerge.change(oldReplica, (draft) => { assert.equal(migrateEventStore(draft), true); });
+  assert.deepEqual(eventsFromDocument(reopened), eventsFromDocument(oldReplica));
+  assert.equal(needsEventStoreMigration(reopened), false);
+});
+
+test("concurrent migrations and independent writes preserve arrays, flat variants, and projections", () => {
+  const groupId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const seed = validExpense(firstId, "Seed");
+  const legacy = { id: secondId, type: "expense", description: "Old meal", amount: 2000, payerId: "alice",
+    splits: [{ personId: "alice", amount: 1000 }, { personId: "bob", amount: 1000 }] };
+  const base = Automerge.from({ groupId, currency: "USD", people: [{ id: "alice" }, { id: "bob" }], events: [legacy, seed] });
+  const left = Automerge.change(Automerge.clone(base), (draft) => {
+    migrateEventStore(draft);
+    appendStoredEvent(draft, validExpense("33333333-3333-4333-8333-333333333333", "Left write"));
+  });
+  const right = Automerge.change(Automerge.clone(base), (draft) => {
+    migrateEventStore(draft);
+    appendStoredEvent(draft, validExpense("44444444-4444-4444-8444-444444444444", "Right write"));
+  });
+  const expectedIds = new Set([firstId, secondId, "33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"]);
+  const projections = [];
+  const audits = [];
+  for (const merged of [Automerge.merge(left, right), Automerge.merge(right, left)]) {
+    assert.deepEqual(new Set(eventsFromDocument(merged).map((event) => event.id)), expectedIds);
+    assert.deepEqual(merged.events, [legacy, seed]);
+    const continued = Automerge.change(merged, (draft) => { migrateEventStore(draft); });
+    const restored = Automerge.load(Automerge.save(continued));
+    const group = { groupId, currency: "USD", people: [{ id: "alice" }, { id: "bob" }], events: eventsFromDocument(restored) };
+    const projection = projectGroup(group);
+    assert.deepEqual(projection, projectGroup({ ...group, events: [...group.events].reverse() }));
+    const audit = auditEntries(group, projection);
+    assert.equal(audit.length, group.events.length);
+    projections.push(projection);
+    audits.push(audit);
+  }
+  assert.deepEqual(projections[0], projections[1]);
+  assert.deepEqual(audits[0], audits[1]);
 });

@@ -314,7 +314,7 @@ Status meanings:
 
 ### DIV-031 — Migrate existing local documents
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-030
 - Deliverable: Add a retry-safe migration from legacy and event-array documents to the approved schema.
 - Likely files: src/legacy.js, migration module, fixtures and tests
@@ -325,7 +325,7 @@ Status meanings:
 
 ### DIV-032 — Merge restores instead of replacing
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-031
 - Deliverable: Change JSON restore to validate and union immutable events into a local replica.
 - Acceptance:
@@ -335,7 +335,7 @@ Status meanings:
 
 ### DIV-033 — Add a local group registry
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-031
 - Deliverable: Replace the single localStorage document ID with a local registry and connect the approved basic group switcher.
 - Acceptance:
