@@ -64,6 +64,10 @@ function fullEventContent(event) {
   return canonicalJson(event);
 }
 
+export function canonicalEventContent(event) {
+  return fullEventContent(event);
+}
+
 function logicalIdentity(event) {
   if (event.type === "expense-created") return ["expense", event.payload.expenseId];
   if (event.type === "settlement-recorded") return ["settlement", event.payload.settlementId];

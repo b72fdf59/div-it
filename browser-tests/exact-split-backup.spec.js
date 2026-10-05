@@ -47,6 +47,7 @@ test("preserves exact splits through reload and backup round-trip", async ({ bro
   const backupPath = await (await downloadPromise).path();
   assert.ok(backupPath);
   const backup = JSON.parse(await fs.readFile(backupPath, "utf8"));
+  assert.equal(backup.eventsById, undefined);
   const savedExpense = backup.events.find((event) => event.payload?.description === "Shared dinner");
   assert.deepEqual(savedExpense.payload.splits.map(({ amount }) => amount), [1234, 766]);
   assert.equal(savedExpense.groupId, backup.groupId);

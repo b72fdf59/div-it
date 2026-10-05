@@ -69,7 +69,7 @@ The app supports local people, equal and exact expenses, integer-minor-unit bala
 
 The version-one event ADR and pure deterministic ledger engine are implemented, including envelope validation, duplicate/collision handling, pending dependencies, settlements/reversals, revisions/voids, explicit conflict resolution, structured diagnostics, and fixed-seed property tests. The app now projects versioned events for balances and effective history, supports settlement recording/reversal and append-only expense revisions/voids, and writes new expenses and settlements as versioned events. Void reasons are required; prior event content remains in backup data. Older prototype expenses remain stored unchanged and are normalized at read time. Prototype attribution and signatures are placeholders until device identity exists.
 
-Automerge Repo, IndexedDB storage, and BroadcastChannel synchronization are present. Local persistence still uses one document ID in `localStorage`, an event array, and replacement-based backup import. The array remains until DIV-030 and old event migration remains until DIV-031. Two-tab convergence has not yet passed the Phase 2 gate.
+Automerge Repo, IndexedDB storage, and BroadcastChannel synchronization are present. Local persistence still uses one document ID in `localStorage` and replacement-based backup import. New versioned writes use flat `eventsById` entries keyed by event ID plus a unique variant ID, with each raw envelope stored as an immutable serialized scalar; legacy `events` arrays remain unchanged and are combined into detached array snapshots until DIV-031 migrates existing documents. Two-tab convergence has not yet passed the Phase 2 gate.
 
 The responsive Activity, Balances, and Group shell, branch review, explicit conflict resolution, and complete audit history are implemented (DIV-022, DIV-025, DIV-026). Competing amount, payer, split, and later branch values are shown without preselecting a winner; stale branch, descendant, and resolution snapshots are rejected. The Phase 1 gate is complete (DIV-027); participant/device membership, signatures, encryption, a multi-device relay, encrypted recovery, Splitwise opening-balance import, and the real-group pilot remain incomplete.
 
@@ -96,7 +96,7 @@ Gate evidence: [Phase 1 review](./docs/review/phase-1-gate.md) records the deter
 ### 2. Harden local CRDT persistence — partial prototype exists
 
 - [x] Introduce Automerge Repo with IndexedDB and BroadcastChannel adapters.
-- [ ] Replace the mutable event array with ID-keyed immutable domain events behind the command boundary.
+- [x] Store new immutable domain events in an ID-keyed Automerge map behind the command boundary; preserve existing arrays until migration.
 - [ ] Add a local group registry and basic switcher while retaining one Automerge document per group.
 - [ ] Make restore merge event sets rather than replace a live document.
 - [ ] Test duplicate, reversed, delayed, dependency-missing, malformed, and incompatible events.

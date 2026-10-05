@@ -56,26 +56,29 @@ test("revises and voids an expense without deleting its prior events", async ({ 
   await page.getByRole("button", { name: "Group" }).click();
   await page.getByRole("button", { name: "Export backup" }).click();
   const backup = JSON.parse(await fs.readFile(await (await downloadPromise).path(), "utf8"));
-  assert.deepEqual(backup.events.map(({ type }) => type), ["expense-created", "expense-revised", "expense-voided"]);
+  assert.deepEqual(backup.events.map(({ type }) => type).sort(), ["expense-created", "expense-revised", "expense-voided"].sort());
+  const created = backup.events.find(({ type }) => type === "expense-created");
+  const changed = backup.events.find(({ type }) => type === "expense-revised");
+  const voided = backup.events.find(({ type }) => type === "expense-voided");
   const [alice, bob] = backup.people;
-  assert.deepEqual(backup.events[0].payload, {
-    expenseId: backup.events[0].id,
+  assert.deepEqual(created.payload, {
+    expenseId: created.id,
     description: "Dinner",
     currency: "USD",
     amount: 2000,
     payerId: alice.id,
     splits: [{ participantId: alice.id, amount: 1000 }, { participantId: bob.id, amount: 1000 }]
   });
-  assert.deepEqual(backup.events[1].payload, {
-    expenseId: backup.events[0].payload.expenseId,
-    supersedesEventId: backup.events[0].id,
+  assert.deepEqual(changed.payload, {
+    expenseId: created.payload.expenseId,
+    supersedesEventId: created.id,
     description: "Dinner adjustment",
     currency: "USD",
     amount: 1500,
     payerId: bob.id,
     splits: [{ participantId: alice.id, amount: 500 }, { participantId: bob.id, amount: 1000 }]
   });
-  assert.equal(backup.events[1].payload.supersedesEventId, backup.events[0].id);
-  assert.equal(backup.events[2].payload.supersedesEventId, backup.events[1].id);
-  assert.equal(backup.events[2].payload.reason, "Duplicate receipt");
+  assert.equal(changed.payload.supersedesEventId, created.id);
+  assert.equal(voided.payload.supersedesEventId, changed.id);
+  assert.equal(voided.payload.reason, "Duplicate receipt");
 });

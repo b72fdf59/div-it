@@ -103,12 +103,14 @@ test("keeps the uncontested balance until an explicit conflict choice and preser
   await page.getByRole("button", { name: "Group" }).click();
   await page.getByRole("button", { name: "Export backup" }).click();
   const saved = JSON.parse(await fs.readFile(await (await downloadPromise).path(), "utf8"));
-  assert.deepEqual(saved.events.map(({ type }) => type), ["expense-created", "expense-revised", "expense-revised", "expense-revised", "conflict-resolved"]);
-  assert.equal(saved.events[1].id, aliceBranchId);
-  assert.equal(saved.events[2].id, bobBranchId);
-  assert.equal(saved.events[3].id, aliceFollowupId);
-  assert.deepEqual(saved.events[4].payload.resolvesEventIds, [aliceBranchId, bobBranchId].sort());
-  assert.equal(saved.events[4].payload.chosenEventId, aliceBranchId);
+  assert.deepEqual(saved.events.map(({ type }) => type).sort(), ["expense-created", "expense-revised", "expense-revised", "expense-revised", "conflict-resolved"].sort());
+  const byId = new Map(saved.events.map((event) => [event.id, event]));
+  assert.equal(byId.get(aliceBranchId).type, "expense-revised");
+  assert.equal(byId.get(bobBranchId).type, "expense-revised");
+  assert.equal(byId.get(aliceFollowupId).payload.supersedesEventId, aliceBranchId);
+  const resolution = saved.events.find(({ type }) => type === "conflict-resolved");
+  assert.deepEqual(resolution.payload.resolvesEventIds, [aliceBranchId, bobBranchId].sort());
+  assert.equal(resolution.payload.chosenEventId, aliceBranchId);
 });
 
 test("requires a new choice to supersede competing earlier resolutions", async ({ page }) => {

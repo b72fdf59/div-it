@@ -302,17 +302,19 @@ Status meanings:
 
 ### DIV-030 — Store events by ID in Automerge
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-027
 - Deliverable: Replace the persisted mutable event array with an ID-keyed map behind the domain API.
 - Acceptance:
   - Projected behavior and UI remain unchanged.
   - Repeated insertion is idempotent.
   - No component knows the Automerge representation.
+  - Same-ID concurrent content remains available for quarantine and audit.
+  - Existing event arrays remain readable and new map writes do not mutate them.
 
 ### DIV-031 — Migrate existing local documents
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-030
 - Deliverable: Add a retry-safe migration from legacy and event-array documents to the approved schema.
 - Likely files: src/legacy.js, migration module, fixtures and tests

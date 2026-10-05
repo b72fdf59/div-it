@@ -5,9 +5,10 @@ import { legacyGroup } from "./legacy.js";
 import { makeExpense } from "./ledger.js";
 import { parseEvent } from "./events.js";
 import { conflictResolutionEnvelope, expenseChangeEnvelope, expenseConflictReviews, expenseEnvelope, groupIdFromDocumentId, projectGroup, settlementEnvelope } from "./prototype-events.js";
+import { appendStoredEvent, eventMapFromArray, eventsFromDocument } from "./event-store.js";
 
 const GROUP_ID_KEY = "div-it-group-id";
-const emptyGroup = () => ({ name: "My group", currency: "USD", people: [], events: [] });
+const emptyGroup = () => ({ name: "My group", currency: "USD", people: [], events: [], eventsById: {} });
 const currencies = new Set(["USD", "INR", "EUR", "GBP"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -77,6 +78,13 @@ function assertWritable(group) {
   if (projectGroup(group).readOnly) throw new Error("This group has unsupported ledger entries and is read-only until the app is updated.");
 }
 
+function snapshotGroup(document) {
+  const snapshot = structuredClone(document);
+  snapshot.events = eventsFromDocument(document);
+  delete snapshot.eventsById;
+  return snapshot;
+}
+
 function assertValidEvent(event) {
   const parsed = parseEvent(event);
   if (!parsed.ok) throw new Error(`Invalid ledger entry: ${parsed.reason}.`);
@@ -122,7 +130,7 @@ export async function openGroup(onSnapshot) {
   const documentId = localStorage.getItem(GROUP_ID_KEY);
   const handle = documentId ? await repo.find(documentId) : repo.create((await legacyGroup()) || emptyGroup());
 
-  const snapshot = handle.doc();
+  const snapshot = snapshotGroup(handle.doc());
   const eventGroups = inspectGroupIds(snapshot.events);
   const storedGroupId = UUID.test(snapshot.groupId || "") ? snapshot.groupId : undefined;
   const groupIdentityIssue = snapshot.groupId !== undefined && !storedGroupId
@@ -138,42 +146,43 @@ export async function openGroup(onSnapshot) {
   }
 
   if (!documentId) localStorage.setItem(GROUP_ID_KEY, handle.documentId);
-  const publish = (doc) => onSnapshot(structuredClone(doc));
+  const publish = (doc) => onSnapshot(snapshotGroup(doc));
   handle.on("change", ({ doc }) => publish(doc));
   publish(handle.doc());
 
   controller = {
     saveSettings(input) {
       const settings = validateGroupSettings(input);
-      assertWritable(handle.doc());
-      if (settings.currency !== handle.doc().currency && handle.doc().events.length) {
+      const current = snapshotGroup(handle.doc());
+      assertWritable(current);
+      if (settings.currency !== current.currency && current.events.length) {
         throw new Error("A group's currency can't change after ledger entries are recorded.");
       }
       handle.change((document) => Object.assign(document, settings));
     },
     addPerson(input) {
-      assertWritable(handle.doc());
+      assertWritable(snapshotGroup(handle.doc()));
       const name = validatePersonName(input);
       const person = { id: crypto.randomUUID(), name };
       handle.change((document) => document.people.push(person));
       return person;
     },
     addExpense(input) {
-      assertWritable(handle.doc());
+      assertWritable(snapshotGroup(handle.doc()));
       const expense = makeExpense(input);
-      const snapshot = handle.doc();
+      const snapshot = snapshotGroup(handle.doc());
       const peopleIds = new Set(snapshot.people.map(({ id }) => id));
       if (!peopleIds.has(expense.payerId) || expense.splits.some(({ personId }) => !peopleIds.has(personId))) {
         throw new Error("Choose people in this group for the payer and split.");
       }
       const event = expenseEnvelope(expense, { groupId: snapshot.groupId || groupId, currency: snapshot.currency });
       assertValidEvent(event);
-      handle.change((document) => document.events.push(event));
+      handle.change((document) => appendStoredEvent(document, event));
       return event;
     },
     reviseExpense(input) {
       const { eventId, description, amount, payerId, splits } = input || {};
-      const current = handle.doc();
+      const current = snapshotGroup(handle.doc());
       assertWritable(current);
       const target = currentExpenseForChange(current, eventId);
       if (target.payload.currency !== current.currency) throw new Error("This expense uses a different group currency.");
@@ -196,7 +205,7 @@ export async function openGroup(onSnapshot) {
         }
       });
       assertValidEvent(event);
-      handle.change((document) => document.events.push(event));
+      handle.change((document) => appendStoredEvent(document, event));
       return event;
     },
     voidExpense(input) {
@@ -204,30 +213,30 @@ export async function openGroup(onSnapshot) {
       if (typeof reason !== "string" || !reason.trim() || [...reason.trim()].length > 500) {
         throw new Error("Enter a void reason of 1 to 500 characters.");
       }
-      const current = handle.doc();
+      const current = snapshotGroup(handle.doc());
       assertWritable(current);
       const target = currentExpenseForChange(current, eventId);
       const event = expenseChangeEnvelope({ type: "expense-voided", groupId: current.groupId,
         expenseId: target.payload.expenseId, supersedesEventId: target.id, reason: reason.trim() });
       assertValidEvent(event);
-      handle.change((document) => document.events.push(event));
+      handle.change((document) => appendStoredEvent(document, event));
       return event;
     },
     resolveExpenseConflict(input) {
-      const current = handle.doc();
+      const current = snapshotGroup(handle.doc());
       assertWritable(current);
       const { expenseId, chosenEventId } = input;
       const review = currentConflictChoice(current, input);
       const event = conflictResolutionEnvelope({ groupId: current.groupId, expenseId,
         resolvesEventIds: review.branchIds, chosenEventId, supersedesResolutionEventIds: review.resolutionIds });
       assertValidEvent(event);
-      handle.change((document) => document.events.push(event));
+      handle.change((document) => appendStoredEvent(document, event));
       return event;
     },
     recordSettlement(input) {
       const { fromParticipantId, toParticipantId, amount } = input || {};
       if (!Number.isSafeInteger(amount) || amount <= 0) throw new Error("Enter a settlement amount greater than zero.");
-      const current = handle.doc();
+      const current = snapshotGroup(handle.doc());
       assertWritable(current);
       const peopleIds = new Set(current.people.map(({ id }) => id));
       if (!peopleIds.has(fromParticipantId) || !peopleIds.has(toParticipantId) || fromParticipantId === toParticipantId) {
@@ -245,7 +254,7 @@ export async function openGroup(onSnapshot) {
         }
       });
       assertValidEvent(event);
-      handle.change((document) => document.events.push(event));
+      handle.change((document) => appendStoredEvent(document, event));
       return event;
     },
     reverseSettlement(input) {
@@ -253,7 +262,7 @@ export async function openGroup(onSnapshot) {
       if (typeof reason !== "string" || !reason.trim() || [...reason.trim()].length > 500) {
         throw new Error("Enter a reversal reason of 1 to 500 characters.");
       }
-      const current = handle.doc();
+      const current = snapshotGroup(handle.doc());
       assertWritable(current);
       const projection = projectGroup(current);
       const target = projection.effective.find((event) => event.id === eventId && event.type === "settlement-recorded");
@@ -266,7 +275,7 @@ export async function openGroup(onSnapshot) {
         payload: { settlementId: target.payload.settlementId, reversesEventId: target.id, reason: reason.trim() }
       });
       assertValidEvent(event);
-      handle.change((document) => document.events.push(event));
+      handle.change((document) => appendStoredEvent(document, event));
       return event;
     },
     importBackup(input) {
@@ -277,7 +286,8 @@ export async function openGroup(onSnapshot) {
         document.name = group.name;
         document.currency = group.currency;
         document.people = group.people;
-        document.events = group.events;
+        document.events = [];
+        document.eventsById = eventMapFromArray(group.events);
       });
     },
   };
