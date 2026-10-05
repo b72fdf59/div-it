@@ -1,9 +1,22 @@
 import { documentIdToBinary } from "@automerge/automerge-repo";
+import { parseEvent } from "./events.js";
 import { projectLedger } from "./ledger.js";
 
 export const PROTOTYPE_AUTHOR = Object.freeze({ participantId: "local-prototype", deviceId: "local-prototype-device", keyId: "development-only" });
 export const PROTOTYPE_SIGNATURE = "development-only";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function isPrototypeEventAuthorized(event, participantIds) {
+  if (event.author.participantId !== PROTOTYPE_AUTHOR.participantId && !participantIds.has(event.author.participantId)) return false;
+  if (event.schemaVersion !== 1 || event.protocolVersion !== 1) return true;
+  if (event.type === "expense-created" || event.type === "expense-revised") {
+    return participantIds.has(event.payload.payerId) && event.payload.splits.every(({ participantId }) => participantIds.has(participantId));
+  }
+  if (event.type === "settlement-recorded") {
+    return participantIds.has(event.payload.fromParticipantId) && participantIds.has(event.payload.toParticipantId);
+  }
+  return true;
+}
 
 export function groupIdFromDocumentId(documentId) {
   const bytes = documentIdToBinary(documentId);
@@ -73,6 +86,85 @@ export function expenseChangeEnvelope({ type, groupId, expenseId, supersedesEven
   };
 }
 
+export function conflictResolutionEnvelope({ groupId, expenseId, resolvesEventIds, chosenEventId, supersedesResolutionEventIds = [] }) {
+  const id = crypto.randomUUID();
+  const supersedes = [...supersedesResolutionEventIds].sort();
+  return {
+    id,
+    type: "conflict-resolved",
+    schemaVersion: 1,
+    protocolVersion: 1,
+    groupId,
+    author: { ...PROTOTYPE_AUTHOR },
+    createdAt: new Date().toISOString(),
+    dependsOn: [...new Set([...resolvesEventIds, ...supersedes])].sort(),
+    payload: {
+      resolutionId: crypto.randomUUID(),
+      expenseId,
+      resolvesEventIds: [...resolvesEventIds].sort(),
+      chosenEventId,
+      supersedesResolutionEventIds: supersedes
+    },
+    signature: PROTOTYPE_SIGNATURE
+  };
+}
+
+export function expenseConflictReviews(group, projection = projectGroup(group)) {
+  const conflicts = new Set(projection.conflicting.filter(({ reason }) => reason === "conflicting-revision").map(({ id }) => id));
+  if (!conflicts.size) return [];
+  const validIds = new Set([
+    ...projection.effective.map(({ id }) => id),
+    ...projection.conflicting.map(({ id }) => id)
+  ]);
+  const participantIds = new Set((group.people ?? []).flatMap((person) => typeof person?.id === "string" ? [person.id] : []));
+  const events = new Map();
+  for (const source of group.events ?? []) {
+    const candidate = normalizeExpenseForProjection(source, group);
+    const parsed = parseEvent(candidate);
+    if (!parsed.ok) continue;
+    const event = parsed.event;
+    if (!validIds.has(event.id) || event.groupId !== group.groupId
+      || (["expense-created", "expense-revised", "settlement-recorded"].includes(event.type)
+        && event.payload.currency !== group.currency)
+      || !isPrototypeEventAuthorized(event, participantIds)) continue;
+    if (!events.has(event.id)) events.set(event.id, event);
+  }
+  const forks = new Map();
+  for (const id of conflicts) {
+    const event = events.get(id);
+    if (!event || !["expense-revised", "expense-voided"].includes(event.type)) continue;
+    const key = `${event.payload.expenseId}:${event.payload.supersedesEventId}`;
+    if (!forks.has(key)) forks.set(key, { expenseId: event.payload.expenseId, parentId: event.payload.supersedesEventId, branchIds: [] });
+    forks.get(key).branchIds.push(id);
+  }
+  const reviews = [];
+  for (const fork of forks.values()) {
+    fork.branchIds.sort();
+    if (fork.branchIds.length < 2) continue;
+    const branchSet = new Set(fork.branchIds);
+    const alreadyResolved = projection.effective.some((event) => event.type === "conflict-resolved"
+      && event.payload.resolvesEventIds.length === fork.branchIds.length
+      && event.payload.resolvesEventIds.every((id, index) => id === fork.branchIds[index]));
+    if (alreadyResolved) continue;
+    const resolutionIds = projection.conflicting.filter(({ id, reason }) => reason === "conflicting-resolution"
+      && branchSet.size === events.get(id)?.payload?.resolvesEventIds?.length
+      && events.get(id)?.payload?.resolvesEventIds.every((branchId) => branchSet.has(branchId)))
+      .map(({ id }) => id).sort();
+    const branches = fork.branchIds.map((id) => {
+      const hypotheticalResolution = conflictResolutionEnvelope({ groupId: group.groupId, expenseId: fork.expenseId,
+        resolvesEventIds: fork.branchIds, chosenEventId: id, supersedesResolutionEventIds: resolutionIds });
+      const hypothetical = projectGroup({ ...group, events: [...(group.events ?? []), hypotheticalResolution] });
+      const preview = hypothetical.effective.find((event) => event.payload?.expenseId === fork.expenseId
+        && ["expense-created", "expense-revised", "expense-voided"].includes(event.type));
+      return { id, event: events.get(id), preview };
+    });
+    reviews.push({ ...fork, key: fork.parentId, branchIds: [...fork.branchIds], resolutionIds, branches,
+      branchPreviewIds: branches.map(({ id, preview }) => `${id}:${preview?.id || "missing"}`),
+      branchPreviewSnapshots: branches.map(({ preview }) => JSON.stringify(preview)) });
+  }
+  return reviews.sort((left, right) => left.key < right.key ? -1 : left.key > right.key ? 1 : 0);
+}
+
 export function normalizeExpenseForProjection(event, { groupId, currency }) {
   const envelopeMarkers = ["schemaVersion", "protocolVersion", "groupId", "payload", "author", "signature", "dependsOn"];
   if (!event || typeof event !== "object" || envelopeMarkers.some((marker) => Object.hasOwn(event, marker))
@@ -100,11 +192,6 @@ export function projectGroup(group) {
     groupId: group.groupId,
     currency: group.currency,
     // Prototype-only authorization: membership is checked locally, but signatures are placeholders until device identity exists.
-    isEventAuthorized: (event) => (event.author.participantId === PROTOTYPE_AUTHOR.participantId || participantIds.has(event.author.participantId))
-      && (event.schemaVersion !== 1 || event.protocolVersion !== 1 ? true : event.type === "expense-created" || event.type === "expense-revised"
-        ? participantIds.has(event.payload.payerId) && event.payload.splits.every(({ participantId }) => participantIds.has(participantId))
-        : event.type === "settlement-recorded"
-          ? participantIds.has(event.payload.fromParticipantId) && participantIds.has(event.payload.toParticipantId)
-          : true)
+    isEventAuthorized: (event) => isPrototypeEventAuthorized(event, participantIds)
   });
 }

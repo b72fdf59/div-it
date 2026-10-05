@@ -71,7 +71,7 @@ The version-one event ADR and pure deterministic ledger engine are implemented, 
 
 Automerge Repo, IndexedDB storage, and BroadcastChannel synchronization are present. Local persistence still uses one document ID in `localStorage`, an event array, and replacement-based backup import. The array remains until DIV-030 and old event migration remains until DIV-031. Two-tab convergence has not yet passed the Phase 2 gate.
 
-The responsive Activity, Balances, and Group shell is implemented (DIV-022). Next are conflict review and complete audit interfaces. Participant/device membership, signatures, encryption, a multi-device relay, encrypted recovery, Splitwise opening-balance import, and the real-group pilot remain incomplete.
+The responsive Activity, Balances, and Group shell is implemented (DIV-022), along with branch review and explicit conflict resolution (DIV-025). Competing amount, payer, split, and later branch values are shown without preselecting a winner; stale branch, descendant, and resolution snapshots are rejected. Complete audit history is the remaining Phase 1 interface. Participant/device membership, signatures, encryption, a multi-device relay, encrypted recovery, Splitwise opening-balance import, and the real-group pilot remain incomplete.
 
 ## Work order
 

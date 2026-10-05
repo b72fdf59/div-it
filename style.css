@@ -104,6 +104,12 @@ small { color: var(--muted); display: block; }
 .prototype-attribution { color: var(--muted); font-size: .8rem; }
 .ledger-warning { border: 1px solid var(--review); border-radius: var(--radius-control); padding: var(--space-3); color: var(--ink); background: var(--review-soft); }
 .ledger-warning p:last-child { margin-bottom: 0; }
+.conflict-inbox { margin: var(--space-4) 0; border: 1px solid var(--review); border-radius: var(--radius-card); padding: var(--space-4); background: var(--review-soft); }
+.conflict-inbox h3, .conflict-card h4 { margin: 0 0 var(--space-2); }
+.conflict-card { border-top: 1px solid var(--review); margin-top: var(--space-3); padding-top: var(--space-3); }
+.conflict-choice { display: flex; align-items: flex-start; gap: var(--space-2); overflow-wrap: anywhere; }
+.conflict-choice input { flex: 0 0 auto; width: auto; margin-top: .25em; }
+.conflict-choice small { margin-top: var(--space-1); }
 :where(button, input, select, .import):focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .view { margin-bottom: var(--space-6); }
 .activity-list { padding-left: 1.2rem; }

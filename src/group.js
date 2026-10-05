@@ -4,7 +4,7 @@ import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-index
 import { legacyGroup } from "./legacy.js";
 import { makeExpense } from "./ledger.js";
 import { parseEvent } from "./events.js";
-import { expenseChangeEnvelope, expenseEnvelope, groupIdFromDocumentId, projectGroup, settlementEnvelope } from "./prototype-events.js";
+import { conflictResolutionEnvelope, expenseChangeEnvelope, expenseConflictReviews, expenseEnvelope, groupIdFromDocumentId, projectGroup, settlementEnvelope } from "./prototype-events.js";
 
 const GROUP_ID_KEY = "div-it-group-id";
 const emptyGroup = () => ({ name: "My group", currency: "USD", people: [], events: [] });
@@ -82,6 +82,23 @@ function currentExpenseForChange(group, eventId) {
     throw new Error("This expense has competing changes. Resolve them before revising or voiding it.");
   }
   return target;
+}
+
+export function currentConflictChoice(group, input) {
+  const { expenseId, parentId, resolvesEventIds, chosenEventId, supersedesResolutionEventIds = [], branchPreviewIds, branchPreviewSnapshots } = input || {};
+  const review = expenseConflictReviews(group).find((item) => item.expenseId === expenseId && item.parentId === parentId);
+  const sameIds = (left, right) => Array.isArray(left) && left.length === right.length
+    && [...left].sort().every((id, index) => id === right[index]);
+  if (!review || !sameIds(resolvesEventIds, review.branchIds)
+    || !sameIds(supersedesResolutionEventIds, review.resolutionIds)
+    || !Array.isArray(branchPreviewIds) || branchPreviewIds.length !== review.branchPreviewIds.length
+    || branchPreviewIds.some((id, index) => id !== review.branchPreviewIds[index])
+    || !Array.isArray(branchPreviewSnapshots) || branchPreviewSnapshots.length !== review.branchPreviewSnapshots.length
+    || branchPreviewSnapshots.some((snapshot, index) => snapshot !== review.branchPreviewSnapshots[index])
+    || !review.branchIds.includes(chosenEventId)) {
+    throw new Error("This conflict changed since you opened it. Review the current competing changes before choosing.");
+  }
+  return review;
 }
 
 export async function openGroup(onSnapshot) {
@@ -181,6 +198,17 @@ export async function openGroup(onSnapshot) {
       const target = currentExpenseForChange(current, eventId);
       const event = expenseChangeEnvelope({ type: "expense-voided", groupId: current.groupId,
         expenseId: target.payload.expenseId, supersedesEventId: target.id, reason: reason.trim() });
+      assertValidEvent(event);
+      handle.change((document) => document.events.push(event));
+      return event;
+    },
+    resolveExpenseConflict(input) {
+      const current = handle.doc();
+      assertWritable(current);
+      const { expenseId, chosenEventId } = input;
+      const review = currentConflictChoice(current, input);
+      const event = conflictResolutionEnvelope({ groupId: current.groupId, expenseId,
+        resolvesEventIds: review.branchIds, chosenEventId, supersedesResolutionEventIds: review.resolutionIds });
       assertValidEvent(event);
       handle.change((document) => document.events.push(event));
       return event;

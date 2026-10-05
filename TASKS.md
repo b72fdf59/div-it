@@ -269,7 +269,7 @@ Status meanings:
 
 ### DIV-025 — Add conflict review UI
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-015, DIV-022
 - Deliverable: Show a calm review banner/inbox, competing revisions, and an explicit resolution action.
 - Acceptance:
@@ -279,7 +279,7 @@ Status meanings:
 
 ### DIV-026 — Add complete audit history
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-023, DIV-024, DIV-025
 - Deliverable: Pair the concise Activity feed with an audit view of all events, references, reasons, and diagnostics.
 - Acceptance:

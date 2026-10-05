@@ -1,12 +1,13 @@
 <script>
   import { onMount } from "svelte";
   import ExpenseForm from "./components/ExpenseForm.svelte";
+  import ConflictReview from "./components/ConflictReview.svelte";
   import GroupSettings from "./components/GroupSettings.svelte";
   import LedgerSummary from "./components/LedgerSummary.svelte";
   import PeopleCard from "./components/PeopleCard.svelte";
   import { openGroup } from "./group.js";
   import { formatCents, settlementPlan } from "./ledger.js";
-  import { projectGroup } from "./prototype-events.js";
+  import { expenseConflictReviews, projectGroup } from "./prototype-events.js";
 
   let group = $state.raw({ name: "My group", currency: "USD", people: [], events: [] });
   let ready = $state(false);
@@ -22,6 +23,7 @@
   let expenseDialog = $state();
   let revisionDialog = $state();
   let projection = $derived(ready ? projectGroup(group) : { balances: {}, effective: [], pending: [], conflicting: [], quarantined: [], unsupported: [], readOnly: false });
+  let conflictReviews = $derived(ready ? expenseConflictReviews(group, projection) : []);
   let readOnly = $derived(projection.readOnly || group.groupIdentityIssue);
   let balanceMap = $derived(Object.fromEntries(group.people.map(({ id }) => [id, projection.balances[id] || 0])));
   let transfers = $derived(readOnly ? [] : settlementPlan(balanceMap));
@@ -78,6 +80,17 @@
       statusMessage = "Expense void saved locally. Previous entries remain in the backup.";
       voidingEventId = "";
       voidReason = "";
+      return true;
+    } catch (cause) {
+      statusMessage = cause.message;
+      return false;
+    }
+  }
+
+  function resolveConflict(input) {
+    try {
+      groupController.resolveExpenseConflict(input);
+      statusMessage = "Conflict choice saved locally. Other branches remain in backup history.";
       return true;
     } catch (cause) {
       statusMessage = cause.message;
@@ -170,6 +183,7 @@
     {#if activeView === "activity"}
       <section aria-labelledby="activity-title" class="view">
         <h2 id="activity-title">Recent activity</h2>
+        <ConflictReview reviews={conflictReviews} people={group.people} {money} resolve={resolveConflict} disabled={readOnly} />
         <ol class="activity-list">
           {#if recentEvents.length}
             {#each recentEvents as event (event.id)}
@@ -207,6 +221,8 @@
                   <strong>Settlement reversed</strong> — {event.payload.reason}
                 {:else if event.type === "expense-voided"}
                   <strong>Expense voided</strong> — {event.payload.reason}
+                {:else if event.type === "conflict-resolved"}
+                  <strong>Expense change selected</strong>
                 {:else}
                   <strong>Ledger entry</strong>
                 {/if}
