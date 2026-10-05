@@ -34,4 +34,4 @@ location.reload()
 
 This replaces current browser data.
 
-The deterministic event ledger and regression tests are implemented. The responsive app shell, settlement/revision/void controls, explicit conflict review, and complete audit history use the event projector; the next step is the Phase 1 gate, followed by local CRDT hardening. The optional encrypted sync relay follows identity and membership work. See TASKS.md for current task status.
+The Phase 1 local-ledger gate is complete: the deterministic event engine, audit UI, responsive shell, conflict resolution, and backup metadata validation pass unit, property, build, and browser checks. The next step is local CRDT hardening. The optional encrypted sync relay follows identity and membership work. See TASKS.md and the [Phase 1 gate review](docs/review/phase-1-gate.md) for current status and evidence.

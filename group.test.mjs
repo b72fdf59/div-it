@@ -23,6 +23,15 @@ test("legacy prototype backup shape is accepted as a detached copy", () => {
   assert.throws(() => validateBackup({ people: [], events: [] }), /Not a Div It backup/);
 });
 
+test("backup metadata must use a supported currency and valid unique participants", () => {
+  const backup = { name: "Trip", currency: "EUR", people: [{ id: "legacy-ana", name: "Ana" }], events: [{ id: "legacy-event", type: "expense", amount: 123 }] };
+  assert.deepEqual(validateBackup(backup).people, backup.people);
+  for (const people of [[null], [{ id: " ", name: "Ana" }], [{ id: "ana", name: " " }], [{ id: "ana", name: "Ana" }, { id: "ana", name: "Another Ana" }]]) {
+    assert.throws(() => validateBackup({ ...backup, people }), /participant|name/i);
+  }
+  assert.throws(() => validateBackup({ ...backup, currency: "invalid" }), /supported currency/i);
+});
+
 test("modern backup keeps the group identity carried by its events", () => {
   const groupId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const event = { id: "11111111-1111-4111-8111-111111111111", schemaVersion: 1, groupId };

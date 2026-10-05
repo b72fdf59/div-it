@@ -49,6 +49,17 @@ export function validateBackup(group) {
     || !Array.isArray(group.people) || !Array.isArray(group.events)) {
     throw new Error("Not a Div It backup.");
   }
+  validateGroupSettings({ name: group.name, currency: group.currency });
+  const participantIds = new Set();
+  for (const person of group.people) {
+    if (!person || typeof person !== "object" || Array.isArray(person)
+      || typeof person.id !== "string" || !person.id.trim()) {
+      throw new Error("Backup contains an invalid participant.");
+    }
+    validatePersonName(person.name);
+    if (participantIds.has(person.id)) throw new Error("Backup contains duplicate participant IDs.");
+    participantIds.add(person.id);
+  }
   if (group.groupId !== undefined && (typeof group.groupId !== "string" || !UUID.test(group.groupId))) {
     throw new Error("Backup contains an invalid ledger group ID.");
   }

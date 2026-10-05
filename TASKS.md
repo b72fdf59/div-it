@@ -289,7 +289,7 @@ Status meanings:
 
 ### DIV-027 — Close the Phase 1 gate
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-017, DIV-026
 - Deliverable: Run the full local suite, fix only gate-blocking defects, and update Phase 1 status.
 - Likely files: narrow fixes, ROADMAP.md, TASKS.md
@@ -302,7 +302,7 @@ Status meanings:
 
 ### DIV-030 — Store events by ID in Automerge
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-027
 - Deliverable: Replace the persisted mutable event array with an ID-keyed map behind the domain API.
 - Acceptance:
