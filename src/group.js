@@ -4,7 +4,7 @@ import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-index
 import { legacyGroup } from "./legacy.js";
 import { makeExpense } from "./ledger.js";
 import { parseEvent } from "./events.js";
-import { expenseEnvelope, groupIdFromDocumentId, projectGroup, settlementEnvelope } from "./prototype-events.js";
+import { expenseChangeEnvelope, expenseEnvelope, groupIdFromDocumentId, projectGroup, settlementEnvelope } from "./prototype-events.js";
 
 const GROUP_ID_KEY = "div-it-group-id";
 const emptyGroup = () => ({ name: "My group", currency: "USD", people: [], events: [] });
@@ -71,6 +71,19 @@ function assertValidEvent(event) {
   if (!parsed.ok) throw new Error(`Invalid ledger entry: ${parsed.reason}.`);
 }
 
+function currentExpenseForChange(group, eventId) {
+  const projection = projectGroup(group);
+  const target = projection.effective.find((event) => event.id === eventId
+    && ["expense-created", "expense-revised"].includes(event.type));
+  if (!target) throw new Error("This expense changed since you opened it. Close the form and review the current activity.");
+  const sameExpense = (event) => event?.payload?.expenseId === target.payload.expenseId;
+  const conflictingIds = new Set(projection.conflicting.map(({ id }) => id));
+  if (group.events.some((event) => conflictingIds.has(event?.id) && sameExpense(event))) {
+    throw new Error("This expense has competing changes. Resolve them before revising or voiding it.");
+  }
+  return target;
+}
+
 export async function openGroup(onSnapshot) {
   if (controller) return controller;
 
@@ -126,6 +139,48 @@ export async function openGroup(onSnapshot) {
         throw new Error("Choose people in this group for the payer and split.");
       }
       const event = expenseEnvelope(expense, { groupId: snapshot.groupId || groupId, currency: snapshot.currency });
+      assertValidEvent(event);
+      handle.change((document) => document.events.push(event));
+      return event;
+    },
+    reviseExpense(input) {
+      const { eventId, description, amount, payerId, splits } = input || {};
+      const current = handle.doc();
+      assertWritable(current);
+      const target = currentExpenseForChange(current, eventId);
+      if (target.payload.currency !== current.currency) throw new Error("This expense uses a different group currency.");
+      const expense = makeExpense({ id: crypto.randomUUID(), description, amount, payerId, splits });
+      const peopleIds = new Set(current.people.map(({ id }) => id));
+      if (!peopleIds.has(expense.payerId) || expense.splits.some(({ personId }) => !peopleIds.has(personId))) {
+        throw new Error("Choose people in this group for the payer and split.");
+      }
+      const event = expenseChangeEnvelope({
+        type: "expense-revised",
+        groupId: current.groupId,
+        expenseId: target.payload.expenseId,
+        supersedesEventId: target.id,
+        payload: {
+          description: expense.description,
+          currency: current.currency,
+          amount: expense.amount,
+          payerId: expense.payerId,
+          splits: expense.splits.map(({ personId, amount }) => ({ participantId: personId, amount }))
+        }
+      });
+      assertValidEvent(event);
+      handle.change((document) => document.events.push(event));
+      return event;
+    },
+    voidExpense(input) {
+      const { eventId, reason } = input || {};
+      if (typeof reason !== "string" || !reason.trim() || [...reason.trim()].length > 500) {
+        throw new Error("Enter a void reason of 1 to 500 characters.");
+      }
+      const current = handle.doc();
+      assertWritable(current);
+      const target = currentExpenseForChange(current, eventId);
+      const event = expenseChangeEnvelope({ type: "expense-voided", groupId: current.groupId,
+        expenseId: target.payload.expenseId, supersedesEventId: target.id, reason: reason.trim() });
       assertValidEvent(event);
       handle.change((document) => document.events.push(event));
       return event;

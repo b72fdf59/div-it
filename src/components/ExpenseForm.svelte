@@ -1,7 +1,7 @@
 <script>
   import { cents } from "../ledger.js";
 
-  let { people, addExpense, disabled = false } = $props();
+  let { people, addExpense, initialExpense = null, title = "Add expense", submitLabel = "Add expense", disabled = false } = $props();
   let description = $state("");
   let amountText = $state("");
   let payerId = $state("");
@@ -9,6 +9,16 @@
   let splitType = $state("equal");
   let exactAmounts = $state({});
   let error = $state("");
+
+  $effect(() => {
+    if (!initialExpense) return;
+    description = initialExpense.description;
+    amountText = (initialExpense.amount / 100).toFixed(2);
+    payerId = initialExpense.payerId;
+    participantIds = initialExpense.splits.map((split) => split.participantId);
+    exactAmounts = Object.fromEntries(initialExpense.splits.map((split) => [split.participantId, (split.amount / 100).toFixed(2)]));
+    splitType = "exact";
+  });
 
   $effect(() => {
     const ids = people.map((person) => person.id);
@@ -39,7 +49,7 @@
 </script>
 
 <section class="card">
-  <h2>Add expense</h2>
+  <h2>{title}</h2>
   <form onsubmit={(event) => { event.preventDefault(); submit(); }}>
     <label>Description <input bind:value={description} placeholder="Dinner" disabled={disabled}></label>
     <label>Amount <input bind:value={amountText} inputmode="decimal" min="0.01" step="0.01" disabled={disabled}></label>
@@ -68,6 +78,6 @@
       </div>
     {/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}
-    <button type="submit" disabled={disabled || !people.length}>{people.length ? "Add expense" : "Add people first"}</button>
+    <button type="submit" disabled={disabled || !people.length}>{people.length ? submitLabel : "Add people first"}</button>
   </form>
 </section>

@@ -65,13 +65,13 @@ Deferred until after the first release: cross-currency expenses and exchange rat
 
 ## Current state
 
-The app supports local people, equal and exact expenses, integer-minor-unit balances, settlement suggestions, JSON backup/import, offline assets, and a developer seed script. Browser regression coverage exercises expense creation, exact splits, reload, and backup round-trip. The UI now uses validated local commands and receives detached snapshots instead of an arbitrary Automerge mutator.
+The app supports local people, equal and exact expenses, integer-minor-unit balances, settlement suggestions, JSON backup/import, offline assets, and a developer seed script. Browser regression coverage exercises expense creation, revisions, voids, exact splits, reload, and backup round-trip. The UI now uses validated local commands and receives detached snapshots instead of an arbitrary Automerge mutator.
 
-The version-one event ADR and pure deterministic ledger engine are implemented, including envelope validation, duplicate/collision handling, pending dependencies, settlements/reversals, revisions/voids, explicit conflict resolution, structured diagnostics, and fixed-seed property tests. The app now projects versioned events for balances and history, supports settlement recording and reversal, and writes new expenses and settlements as versioned events. Older prototype expenses remain stored unchanged and are normalized at read time. Prototype attribution and signatures are placeholders until device identity exists.
+The version-one event ADR and pure deterministic ledger engine are implemented, including envelope validation, duplicate/collision handling, pending dependencies, settlements/reversals, revisions/voids, explicit conflict resolution, structured diagnostics, and fixed-seed property tests. The app now projects versioned events for balances and effective history, supports settlement recording/reversal and append-only expense revisions/voids, and writes new expenses and settlements as versioned events. Void reasons are required; prior event content remains in backup data. Older prototype expenses remain stored unchanged and are normalized at read time. Prototype attribution and signatures are placeholders until device identity exists.
 
 Automerge Repo, IndexedDB storage, and BroadcastChannel synchronization are present. Local persistence still uses one document ID in `localStorage`, an event array, and replacement-based backup import. The array remains until DIV-030 and old event migration remains until DIV-031. Two-tab convergence has not yet passed the Phase 2 gate.
 
-The responsive Activity, Balances, and Group shell is implemented (DIV-022). Next are expense revision/void, conflict review, and audit interfaces. Participant/device membership, signatures, encryption, a multi-device relay, encrypted recovery, Splitwise opening-balance import, and the real-group pilot remain incomplete.
+The responsive Activity, Balances, and Group shell is implemented (DIV-022). Next are conflict review and complete audit interfaces. Participant/device membership, signatures, encryption, a multi-device relay, encrypted recovery, Splitwise opening-balance import, and the real-group pilot remain incomplete.
 
 ## Work order
 
@@ -87,7 +87,7 @@ Execution-sized tasks, dependencies, and acceptance checks live in [TASKS.md](./
 - [x] Define versioned event envelopes, IDs, dependencies, validation, and deterministic projection independently of Automerge.
 - [ ] Implement expense revision/void, settlement/reversal, and complete audit-history views.
 - [x] Add tests for every event type and revision chain plus property tests that balances always sum to zero.
-- [ ] Quarantine invalid and dependency-missing events without corrupting the last valid projection.
+- [x] Quarantine invalid and dependency-missing events without corrupting the last valid projection.
 
 Done when the ledger can represent and verify a week of single-currency activity, every change is auditable, and tests demonstrate deterministic balances independent of insertion order or duplication.
 

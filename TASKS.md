@@ -259,7 +259,7 @@ Status meanings:
 
 ### DIV-024 — Add revision and void UI
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-014, DIV-022
 - Deliverable: Add focused controls to revise or void an expense without overwriting it.
 - Acceptance:

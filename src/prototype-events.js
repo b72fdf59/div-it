@@ -56,6 +56,23 @@ export function settlementEnvelope({ type, id = crypto.randomUUID(), groupId, pa
   };
 }
 
+export function expenseChangeEnvelope({ type, groupId, expenseId, supersedesEventId, payload = {}, reason }) {
+  return {
+    id: crypto.randomUUID(),
+    type,
+    schemaVersion: 1,
+    protocolVersion: 1,
+    groupId,
+    author: { ...PROTOTYPE_AUTHOR },
+    createdAt: new Date().toISOString(),
+    dependsOn: [supersedesEventId],
+    payload: type === "expense-revised"
+      ? { ...payload, expenseId, supersedesEventId }
+      : { expenseId, supersedesEventId, reason },
+    signature: PROTOTYPE_SIGNATURE
+  };
+}
+
 export function normalizeExpenseForProjection(event, { groupId, currency }) {
   const envelopeMarkers = ["schemaVersion", "protocolVersion", "groupId", "payload", "author", "signature", "dependsOn"];
   if (!event || typeof event !== "object" || envelopeMarkers.some((marker) => Object.hasOwn(event, marker))

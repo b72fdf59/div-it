@@ -14,14 +14,22 @@
   let activeView = $state("activity");
   let reversingEventId = $state("");
   let reversalReason = $state("");
+  let editingEventId = $state("");
+  let editingPayload = $state(null);
+  let voidingEventId = $state("");
+  let voidReason = $state("");
   let groupController;
   let expenseDialog = $state();
+  let revisionDialog = $state();
   let projection = $derived(ready ? projectGroup(group) : { balances: {}, effective: [], pending: [], conflicting: [], quarantined: [], unsupported: [], readOnly: false });
   let readOnly = $derived(projection.readOnly || group.groupIdentityIssue);
   let balanceMap = $derived(Object.fromEntries(group.people.map(({ id }) => [id, projection.balances[id] || 0])));
   let transfers = $derived(readOnly ? [] : settlementPlan(balanceMap));
   let reversedSettlementIds = $derived(new Set(projection.effective.filter(({ type }) => type === "settlement-reversed").map(({ payload }) => payload.settlementId)));
   let recentEvents = $derived([...projection.effective].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+  let effectiveExpenses = $derived(projection.effective.filter((event) => ["expense-created", "expense-revised"].includes(event.type)));
+  let editingExpense = $derived(effectiveExpenses.find((event) => event.id === editingEventId));
+  let conflictIds = $derived(new Set(projection.conflicting.map(({ id }) => id)));
   let money = (amount) => formatCents(amount, group.currency);
   let personName = (id) => group.people.find((person) => person.id === id)?.name || "Unknown";
 
@@ -49,6 +57,43 @@
     statusMessage = "Expense saved locally.";
     expenseDialog.close();
     return true;
+  }
+
+  function changeExpense(input) {
+    try {
+      groupController.reviseExpense({ ...input, eventId: editingEventId });
+      statusMessage = "Expense revision saved locally. Previous entries remain in the backup.";
+      editingEventId = "";
+      revisionDialog.close();
+      return true;
+    } catch (cause) {
+      statusMessage = cause.message;
+      return false;
+    }
+  }
+
+  function voidExpense(eventId) {
+    try {
+      groupController.voidExpense({ eventId, reason: voidReason });
+      statusMessage = "Expense void saved locally. Previous entries remain in the backup.";
+      voidingEventId = "";
+      voidReason = "";
+      return true;
+    } catch (cause) {
+      statusMessage = cause.message;
+      return false;
+    }
+  }
+
+  function canChangeExpense(event) {
+    const expenseId = event.payload.expenseId;
+    return !group.events.some((item) => conflictIds.has(item?.id) && item?.payload?.expenseId === expenseId);
+  }
+
+  function openRevision(event) {
+    editingEventId = event.id;
+    editingPayload = structuredClone(event.payload);
+    revisionDialog.showModal();
   }
 
   function recordSettlement(transfer) {
@@ -131,6 +176,20 @@
               <li>
                 {#if event.type === "expense-created" || event.type === "expense-revised"}
                   <strong>{event.payload.description}</strong> — {money(event.payload.amount)} paid by {personName(event.payload.payerId)}
+                  {#if event.type === "expense-revised"}<small>Effective revision</small>{/if}
+                  {#if canChangeExpense(event)}
+                    <button type="button" disabled={readOnly} onclick={() => openRevision(event)}>Revise expense</button>
+                    <button type="button" disabled={readOnly} onclick={() => { voidingEventId = event.id; voidReason = ""; }}>Void expense</button>
+                  {:else}
+                    <small>Changes need conflict review</small>
+                  {/if}
+                  {#if voidingEventId === event.id}
+                    <form onsubmit={(e) => { e.preventDefault(); voidExpense(event.id); }}>
+                      <label>Reason for voiding <input bind:value={voidReason} maxlength="500" required></label>
+                      <button type="submit" disabled={readOnly}>Confirm void</button>
+                      <button type="button" onclick={() => voidingEventId = ""}>Cancel</button>
+                    </form>
+                  {/if}
                 {:else if event.type === "settlement-recorded"}
                   <strong>{personName(event.payload.fromParticipantId)} paid {personName(event.payload.toParticipantId)}</strong> — {money(event.payload.amount)}
                   {#if reversedSettlementIds.has(event.payload.settlementId)}
@@ -188,6 +247,15 @@
       <h2 id="expense-title">Add expense</h2>
       <form method="dialog"><button class="dialog-close" aria-label="Close">Close</button></form>
       <ExpenseForm people={group.people} {addExpense} disabled={readOnly} />
+    </dialog>
+    <dialog bind:this={revisionDialog} aria-labelledby="revision-title">
+      <h2 id="revision-title">Revise expense</h2>
+      <form method="dialog"><button class="dialog-close" aria-label="Close">Close</button></form>
+      {#if editingExpense}
+        <ExpenseForm people={group.people} addExpense={changeExpense} initialExpense={editingPayload} title="Revise expense" submitLabel="Save revision" disabled={readOnly || !canChangeExpense(editingExpense)} />
+      {:else}
+        <p>This expense changed since the form opened. Close it and review the current activity.</p>
+      {/if}
     </dialog>
   </main>
 {:else}

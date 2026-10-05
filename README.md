@@ -34,4 +34,4 @@ location.reload()
 
 This replaces current browser data.
 
-The deterministic event ledger and regression tests are implemented. The responsive app shell and settlement recording/reversal UI use the event projector; next are revision, void, conflict review, and audit views, followed by local CRDT hardening. The optional encrypted sync relay follows identity and membership work. See TASKS.md for current task status.
+The deterministic event ledger and regression tests are implemented. The responsive app shell and settlement, revision, and void controls use the event projector; conflict review and complete audit views remain, followed by local CRDT hardening. The optional encrypted sync relay follows identity and membership work. See TASKS.md for current task status.
