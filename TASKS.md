@@ -325,7 +325,7 @@ Status meanings:
 
 ### DIV-032 — Merge restores instead of replacing
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-031
 - Deliverable: Change JSON restore to validate and union immutable events into a local replica.
 - Acceptance:

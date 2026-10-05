@@ -51,9 +51,9 @@ test("invalid backup metadata cannot replace a populated group", async ({ page }
 
   await page.getByRole("button", { name: "Group" }).click();
   const legacy = {
-    name: "Old trip", currency: "EUR", people: [{ id: "legacy-ana", name: "Ana" }, { id: "legacy-ben", name: "Ben" }],
-    events: [{ id: "15151515-1515-4151-8151-151515151515", type: "expense", description: "Old meal", amount: 1000, payerId: "legacy-ana",
-      splits: [{ personId: "legacy-ana", amount: 500 }, { personId: "legacy-ben", amount: 500 }] }]
+    name: "Older trip name", currency: current.currency, people: current.people,
+    events: [{ id: "15151515-1515-4151-8151-151515151515", type: "expense", description: "Old meal", amount: 1000, payerId: current.people[0].id,
+      splits: [{ personId: current.people[0].id, amount: 500 }, { personId: current.people[1].id, amount: 500 }] }]
   };
   await page.locator('input[type="file"]').setInputFiles({
     name: "legacy-backup.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(legacy))

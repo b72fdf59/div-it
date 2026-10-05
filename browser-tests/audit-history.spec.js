@@ -67,13 +67,31 @@ const backup = {
     }),
     event(reversalEventId, "settlement-reversed", {
       settlementId, reversesEventId: settlementEventId, reason: "Transfer returned"
-    }, [settlementEventId]),
-    event(invalidId, "expense-revised", {})
+    }, [settlementEventId])
   ]
 };
 
 test("opens audit chains from activity and conflicts, and inspects all diagnostics", async ({ page }) => {
+  const malformedStoredEvent = event(invalidId, "expense-revised", {});
+  await page.route("**/src/main.js", (route) => route.abort());
   await page.goto("/");
+  await page.evaluate(async (stored) => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("div-it", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("state");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction("state", "readwrite");
+      transaction.objectStore("state").put(stored, "group");
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error);
+    });
+    db.close();
+  }, { ...backup, events: [malformedStoredEvent] });
+  await page.unroute("**/src/main.js");
+  await page.reload();
   await expect(page.getByRole("button", { name: "Activity" })).toBeVisible();
   await page.getByRole("button", { name: "Group" }).click();
   await page.locator('input[type="file"]').setInputFiles({

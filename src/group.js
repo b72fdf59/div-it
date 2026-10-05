@@ -2,10 +2,10 @@ import { Repo } from "@automerge/automerge-repo";
 import { BroadcastChannelNetworkAdapter } from "@automerge/automerge-repo-network-broadcastchannel";
 import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
 import { legacyGroup } from "./legacy.js";
-import { makeExpense } from "./ledger.js";
+import { canonicalEventContent, makeExpense } from "./ledger.js";
 import { parseEvent } from "./events.js";
-import { conflictResolutionEnvelope, expenseChangeEnvelope, expenseConflictReviews, expenseEnvelope, groupIdFromDocumentId, projectGroup, settlementEnvelope } from "./prototype-events.js";
-import { appendStoredEvent, eventMapFromArray, eventsFromDocument, migrateEventStore, needsEventStoreMigration } from "./event-store.js";
+import { conflictResolutionEnvelope, expenseChangeEnvelope, expenseConflictReviews, expenseEnvelope, groupIdFromDocumentId, normalizeExpenseForProjection, projectGroup, settlementEnvelope } from "./prototype-events.js";
+import { appendStoredEvent, eventsFromDocument, migrateEventStore, needsEventStoreMigration } from "./event-store.js";
 
 const GROUP_ID_KEY = "div-it-group-id";
 const emptyGroup = () => ({ name: "My group", currency: "USD", people: [], events: [], eventsById: {} });
@@ -73,13 +73,83 @@ export function validateBackup(group) {
   return validated;
 }
 
+export function prepareBackupMerge(current, input) {
+  const backup = validateBackup(input);
+  const currentPeople = current.people ?? [];
+  const currentEvents = current.events ?? [];
+  const populated = currentPeople.length > 0 || currentEvents.length > 0;
+  if (current.groupIdentityIssue) throw new Error("This group's ledger identity is ambiguous and cannot accept a backup.");
+  if (populated && backup.groupId && current.groupId !== backup.groupId) {
+    throw new Error("Backup belongs to a different ledger group.");
+  }
+  if (populated && current.currency !== backup.currency) {
+    throw new Error("Backup currency does not match this populated group.");
+  }
+
+  const peopleById = new Map(currentPeople.map((person) => [person.id, person]));
+  const newPeople = [];
+  for (const person of backup.people) {
+    const existing = peopleById.get(person.id);
+    if (existing && existing.name !== person.name) throw new Error(`Participant ID ${person.id} has different names in the backup.`);
+    if (!existing) {
+      peopleById.set(person.id, person);
+      newPeople.push(person);
+    }
+  }
+
+  const incomingById = new Map();
+  for (const source of backup.events) {
+    const event = normalizeExpenseForProjection(source, { groupId: backup.groupId || current.groupId, currency: backup.currency });
+    if (typeof event?.id !== "string" || !event.id) throw new Error("Backup contains a ledger event without an ID.");
+    const content = canonicalEventContent(source);
+    const variants = incomingById.get(source.id) ?? [];
+    if (variants.some((variant) => canonicalEventContent(variant) !== content)) {
+      throw new Error(`Backup contains different ledger events with ID ${source.id}.`);
+    }
+    variants.push(source);
+    incomingById.set(source.id, variants);
+  }
+  for (const [id, variants] of incomingById) {
+    const local = currentEvents.filter((event) => event?.id === id);
+    if (local.some((event) => variants.some((variant) => canonicalEventContent(event) !== canonicalEventContent(variant)))) {
+      throw new Error(`Ledger event ID ${id} conflicts with this group.`);
+    }
+  }
+
+  const newEvents = backup.events.filter((event) => !currentEvents.some((existing) => canonicalEventContent(existing) === canonicalEventContent(event)));
+  const incomingProjection = projectGroup({
+    groupId: backup.groupId || current.groupId,
+    currency: backup.currency,
+    people: [...currentPeople, ...newPeople],
+    events: [...currentEvents, ...newEvents]
+  });
+  const incomingIds = new Set(newEvents.map((event) => event.id));
+  const incomingQuarantine = incomingProjection.quarantined.filter(({ id }) => incomingIds.has(id));
+  if (incomingQuarantine.length) {
+    const reasons = [...new Set(incomingQuarantine.map(({ reason }) => reason))].join(", ");
+    throw new Error(`Backup contains invalid ledger events (${reasons}).`);
+  }
+
+  const fresh = !populated;
+  const groupId = fresh ? backup.groupId || current.groupId : current.groupId;
+  return {
+    name: fresh ? backup.name : current.name,
+    currency: fresh ? backup.currency : current.currency,
+    groupId,
+    people: newPeople,
+    events: newEvents,
+    changes: fresh && (backup.name !== current.name || backup.currency !== current.currency || (backup.groupId && backup.groupId !== current.groupId))
+      || newPeople.length > 0 || newEvents.length > 0
+  };
+}
+
 function assertWritable(group) {
   if (group.groupIdentityIssue) throw new Error("This group's ledger identity is ambiguous. Import a valid backup before editing.");
   if (projectGroup(group).readOnly) throw new Error("This group has unsupported ledger entries and is read-only until the app is updated.");
 }
 
 function snapshotGroup(document) {
-  const snapshot = structuredClone(document);
+  const snapshot = JSON.parse(JSON.stringify(document));
   snapshot.events = eventsFromDocument(document);
   delete snapshot.eventsById;
   delete snapshot.eventStoreFormatVersion;
@@ -284,16 +354,17 @@ export async function openGroup(onSnapshot) {
       return event;
     },
     importBackup(input) {
-      const group = validateBackup(input);
+      const prepared = prepareBackupMerge(snapshotGroup(handle.doc()), input);
+      if (!prepared.changes) return false;
       handle.change((document) => {
-        if (group.groupId) document.groupId = group.groupId;
-        document.groupIdentityIssue = false;
-        document.name = group.name;
-        document.currency = group.currency;
-        document.people = group.people;
-        document.events = [];
-        document.eventsById = eventMapFromArray(group.events);
+        const current = prepareBackupMerge(snapshotGroup(document), input);
+        if (current.name !== document.name) document.name = current.name;
+        if (current.currency !== document.currency) document.currency = current.currency;
+        if (current.groupId && current.groupId !== document.groupId) document.groupId = current.groupId;
+        for (const person of current.people) document.people.push(person);
+        for (const event of current.events) appendStoredEvent(document, event);
       });
+      return true;
     },
   };
   return controller;
