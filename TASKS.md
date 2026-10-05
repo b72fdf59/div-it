@@ -215,7 +215,7 @@ Status meanings:
 
 ### DIV-020 — Introduce typed local commands
 
-- Status: BLOCKED
+- Status: DONE
 - Depends on: DIV-016
 - Deliverable: Replace the controller's public arbitrary mutator with narrow commands while temporarily preserving the existing persisted Automerge shape.
 - Likely files: src/group.js and command tests
@@ -226,7 +226,7 @@ Status meanings:
 
 ### DIV-021 — Move existing UI onto typed commands
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-020
 - Deliverable: Route group settings, participant creation, and expense creation through the command API.
 - Likely files: src/App.svelte, src/group.js, affected components

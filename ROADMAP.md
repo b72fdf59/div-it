@@ -81,7 +81,7 @@ Execution-sized tasks, dependencies, and acceptance checks live in [TASKS.md](./
 
 - [x] Fix the reported add-expense failure.
 - [ ] Add an automated browser smoke test covering people, equal/exact expenses, reload, and backup round-trip; retain the add-expense case as a regression test.
-- [ ] Replace arbitrary `change(mutator)` calls with a typed domain command boundary.
+- [x] Replace arbitrary `change(mutator)` calls with a typed domain command boundary.
 - [ ] Define versioned event envelopes, IDs, dependencies, validation, and deterministic projection independently of Automerge.
 - [ ] Implement expense revision/void, settlement/reversal, and complete audit-history views.
 - [ ] Add tests for every event type and revision chain plus property tests that balances always sum to zero.
