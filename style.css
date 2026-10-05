@@ -110,6 +110,19 @@ small { color: var(--muted); display: block; }
 .conflict-choice { display: flex; align-items: flex-start; gap: var(--space-2); overflow-wrap: anywhere; }
 .conflict-choice input { flex: 0 0 auto; width: auto; margin-top: .25em; }
 .conflict-choice small { margin-top: var(--space-1); }
+.activity-heading, .audit-heading, .audit-entry-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+.activity-heading h2, .audit-heading h2 { margin-bottom: 0; }
+.secondary-action { background: transparent; border: 1px solid var(--line); color: var(--ink); }
+.audit-note { color: var(--muted); }
+.audit-list { list-style: none; padding: 0; }
+.audit-entry { overflow-wrap: anywhere; border-top: 1px solid var(--line); padding: var(--space-4) 0; }
+.audit-entry-heading span { font-weight: 700; }
+.audit-entry p { margin: var(--space-2) 0; }
+.audit-entry dl { display: grid; grid-template-columns: minmax(7rem, auto) minmax(0, 1fr); gap: var(--space-1) var(--space-3); }
+.audit-entry dt { color: var(--muted); }
+.audit-entry dd { margin: 0; overflow-wrap: anywhere; }
+.audit-entry pre { max-height: 24rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: var(--space-3); border-radius: var(--radius-control); background: var(--surface); }
+.audit-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 :where(button, input, select, .import):focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .view { margin-bottom: var(--space-6); }
 .activity-list { padding-left: 1.2rem; }

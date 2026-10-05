@@ -76,7 +76,7 @@ test("keeps the uncontested balance until an explicit conflict choice and preser
   await expect(review).toContainText("Alice $4.00, Bob $12.00");
   await expect(review).toContainText("Concert final: $50.00, paid by Bob");
   await expect(review).toContainText("Alice $10.00, Bob $40.00");
-  await expect(review).toContainText("Latest uncontested value after: Concert revised by Alice: $24.00");
+  await expect(review).toContainText("Original proposal: Concert revised by Alice: $24.00");
   const choices = review.locator('input[type="radio"]');
   await expect(choices).toHaveCount(2);
   await expect(choices.nth(0)).not.toBeChecked();

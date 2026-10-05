@@ -279,7 +279,7 @@ Status meanings:
 
 ### DIV-026 — Add complete audit history
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-023, DIV-024, DIV-025
 - Deliverable: Pair the concise Activity feed with an audit view of all events, references, reasons, and diagnostics.
 - Acceptance:
@@ -289,7 +289,7 @@ Status meanings:
 
 ### DIV-027 — Close the Phase 1 gate
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-017, DIV-026
 - Deliverable: Run the full local suite, fix only gate-blocking defects, and update Phase 1 status.
 - Likely files: narrow fixes, ROADMAP.md, TASKS.md

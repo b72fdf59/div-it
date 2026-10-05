@@ -2,17 +2,21 @@
   import { onMount } from "svelte";
   import ExpenseForm from "./components/ExpenseForm.svelte";
   import ConflictReview from "./components/ConflictReview.svelte";
+  import AuditHistory from "./components/AuditHistory.svelte";
   import GroupSettings from "./components/GroupSettings.svelte";
   import LedgerSummary from "./components/LedgerSummary.svelte";
   import PeopleCard from "./components/PeopleCard.svelte";
   import { openGroup } from "./group.js";
   import { formatCents, settlementPlan } from "./ledger.js";
+  import { auditEntries } from "./audit.js";
   import { expenseConflictReviews, projectGroup } from "./prototype-events.js";
 
   let group = $state.raw({ name: "My group", currency: "USD", people: [], events: [] });
   let ready = $state(false);
   let statusMessage = $state("");
   let activeView = $state("activity");
+  let showAudit = $state(false);
+  let auditFilter = $state(null);
   let reversingEventId = $state("");
   let reversalReason = $state("");
   let editingEventId = $state("");
@@ -24,6 +28,7 @@
   let revisionDialog = $state();
   let projection = $derived(ready ? projectGroup(group) : { balances: {}, effective: [], pending: [], conflicting: [], quarantined: [], unsupported: [], readOnly: false });
   let conflictReviews = $derived(ready ? expenseConflictReviews(group, projection) : []);
+  let auditItems = $derived(ready ? auditEntries(group, projection, auditFilter) : []);
   let readOnly = $derived(projection.readOnly || group.groupIdentityIssue);
   let balanceMap = $derived(Object.fromEntries(group.people.map(({ id }) => [id, projection.balances[id] || 0])));
   let transfers = $derived(readOnly ? [] : settlementPlan(balanceMap));
@@ -34,6 +39,16 @@
   let conflictIds = $derived(new Set(projection.conflicting.map(({ id }) => id)));
   let money = (amount) => formatCents(amount, group.currency);
   let personName = (id) => group.people.find((person) => person.id === id)?.name || "Unknown";
+  let auditMoney = (amount, currency) => {
+    try { return formatCents(amount, currency || group.currency); }
+    catch { return `${amount ?? "Invalid amount"} ${currency || "unknown currency"}`; }
+  };
+
+  function openAudit(filter = null) {
+    auditFilter = filter;
+    showAudit = true;
+    activeView = "activity";
+  }
 
   onMount(async () => {
     groupController = await openGroup((nextGroup) => {
@@ -181,9 +196,14 @@
     {/if}
 
     {#if activeView === "activity"}
+      {#if showAudit}
+        <AuditHistory entries={auditItems} filtered={Boolean(auditFilter)} {personName} money={auditMoney}
+          onBack={() => { showAudit = false; auditFilter = null; }} onAll={() => auditFilter = null} />
+      {:else}
       <section aria-labelledby="activity-title" class="view">
         <h2 id="activity-title">Recent activity</h2>
-        <ConflictReview reviews={conflictReviews} people={group.people} {money} resolve={resolveConflict} disabled={readOnly} />
+        <button type="button" class="secondary-action" onclick={() => openAudit()}>Open audit history</button>
+        <ConflictReview reviews={conflictReviews} people={group.people} {money} resolve={resolveConflict} onAudit={(expenseId) => openAudit({ expenseId })} disabled={readOnly} />
         <ol class="activity-list">
           {#if recentEvents.length}
             {#each recentEvents as event (event.id)}
@@ -226,6 +246,11 @@
                 {:else}
                   <strong>Ledger entry</strong>
                 {/if}
+                {#if event.payload?.expenseId}
+                  <button type="button" class="secondary-action" onclick={() => openAudit({ expenseId: event.payload.expenseId })}>View audit chain</button>
+                {:else if event.payload?.settlementId}
+                  <button type="button" class="secondary-action" onclick={() => openAudit({ settlementId: event.payload.settlementId })}>View audit chain</button>
+                {/if}
                 <small>{new Date(event.createdAt).toLocaleString()}</small>
               </li>
             {/each}
@@ -234,6 +259,7 @@
           {/if}
         </ol>
       </section>
+      {/if}
     {:else if activeView === "balances"}
       <section aria-labelledby="balances-title" class="view">
         <h2 id="balances-title">Balances</h2>

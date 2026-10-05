@@ -1,5 +1,5 @@
 <script>
-  let { reviews, people, money, resolve, disabled = false } = $props();
+  let { reviews, people, money, resolve, onAudit, disabled = false } = $props();
   let choices = $state({});
   let error = $state("");
   const names = (id) => people.find((person) => person.id === id)?.name || "Unknown";
@@ -63,7 +63,7 @@
             <label class="conflict-choice">
               <input type="radio" name={`conflict-${review.key}`} value={branch.id} checked={choice?.chosenEventId === branch.id} onchange={() => choose(review, branch.id)} disabled={disabled}>
               <span><strong>Change {index + 1}</strong> — {describe(branch.preview)}
-                {#if branch.preview.id !== branch.id}<small>Latest uncontested value after: {describe(branch.event)}</small>{/if}
+                {#if branch.preview.id !== branch.id}<small>Original proposal: {describe(branch.event)}. The value above is this branch's current result.</small>{/if}
               </span>
             </label>
           {/each}
@@ -71,6 +71,7 @@
         {#if stale}<p role="alert">New competing changes arrived. Review the updated options and choose again.</p>{/if}
         {#if error}<p role="alert">{error}</p>{/if}
         <button type="button" disabled={disabled || !choice || stale} onclick={() => submit(review)}>Keep selected change</button>
+        <button type="button" class="secondary-action" onclick={() => onAudit(review.expenseId)}>Inspect audit chain</button>
       </article>
     {/each}
   </section>
