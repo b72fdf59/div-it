@@ -226,7 +226,7 @@ Status meanings:
 
 ### DIV-021 — Move existing UI onto typed commands
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-020
 - Deliverable: Route group settings, participant creation, and expense creation through the command API.
 - Likely files: src/App.svelte, src/group.js, affected components
@@ -237,7 +237,7 @@ Status meanings:
 
 ### DIV-022 — Build the responsive app shell
 
-- Status: BLOCKED
+- Status: DONE
 - Depends on: DIV-006, DIV-007, DIV-021
 - Deliverable: Implement the approved mobile-first Activity, Balances, and Group navigation plus persistent Add Expense action using current capabilities.
 - Source: docs/design/calm-mobile-mock.html
@@ -249,7 +249,7 @@ Status meanings:
 
 ### DIV-023 — Add settlement recording UI
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-013, DIV-022
 - Deliverable: Let a member record and reverse a manual settlement.
 - Acceptance:
@@ -259,7 +259,7 @@ Status meanings:
 
 ### DIV-024 — Add revision and void UI
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-014, DIV-022
 - Deliverable: Add focused controls to revise or void an expense without overwriting it.
 - Acceptance:
@@ -269,7 +269,7 @@ Status meanings:
 
 ### DIV-025 — Add conflict review UI
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-015, DIV-022
 - Deliverable: Show a calm review banner/inbox, competing revisions, and an explicit resolution action.
 - Acceptance:

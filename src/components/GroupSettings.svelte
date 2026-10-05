@@ -9,7 +9,7 @@
   });
 
   function submit() {
-    save({ ...group, name: name.trim() || "My group", currency });
+    save({ name: name.trim(), currency });
   }
 </script>
 

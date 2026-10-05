@@ -1,11 +1,11 @@
 <script>
-  let { people, balanceMap, money, addPerson } = $props();
+  let { people, addPerson } = $props();
   let name = $state("");
 
   function submit() {
     const value = name.trim();
     if (!value) return;
-    addPerson(value);
+    if (!addPerson(value)) return;
     name = "";
   }
 </script>
@@ -19,7 +19,7 @@
   <ul class="people">
     {#if people.length}
       {#each people as person (person.id)}
-        <li>{person.name} <span>{money(balanceMap[person.id])}</span></li>
+        <li>{person.name}</li>
       {/each}
     {:else}
       <li>Add people to begin.</li>

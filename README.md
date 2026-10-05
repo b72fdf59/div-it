@@ -6,10 +6,10 @@ See [ROADMAP.md](./ROADMAP.md) for product decisions and implementation order, [
 
 ## Structure
 
-- `src/App.svelte`: local group state and CRDT actions.
+- `src/App.svelte`: local group snapshots and typed command calls.
 - `src/components/`: small UI pieces for group settings, people, expense entry, and ledger summary.
 - `src/ledger.js`: money validation, balance calculation, and settlement logic.
-- `src/group.js`: Automerge document, IndexedDB persistence, and same-browser-tab sync.
+- `src/group.js`: validated local commands, Automerge document, IndexedDB persistence, and BroadcastChannel adapter.
 - `src/legacy.js`: one-time import of data created by the pre-CRDT prototype.
 - `public/`: PWA manifest and service worker.
 
@@ -34,4 +34,4 @@ location.reload()
 
 This replaces current browser data.
 
-Next: stabilize the immutable ledger event model and test boundary before hardening the existing Automerge prototype. The optional encrypted sync relay follows after local CRDT behavior is verified.
+The deterministic event ledger and regression tests are implemented. Next: finish the responsive app shell and connect event operations and audit views to the UI, then harden local CRDT persistence. The optional encrypted sync relay follows identity and membership work. See TASKS.md for current task status.

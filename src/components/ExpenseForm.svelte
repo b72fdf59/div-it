@@ -27,7 +27,7 @@
   function submit() {
     try {
       const amount = cents(amountText);
-      addExpense({ description, amount, payerId, splits: splits(amount) });
+      if (!addExpense({ description, amount, payerId, splits: splits(amount) })) return;
       description = "";
       amountText = "";
       exactAmounts = {};

@@ -1,9 +1,9 @@
 <script>
-  let { group, transfers, money, personName } = $props();
+  let { transfers, money, personName, balanceMap } = $props();
 </script>
 
-<section class="card">
-  <h2>Settle up</h2>
+<section class="card" aria-labelledby="settle-title">
+  <h3 id="settle-title">Suggested settlements</h3>
   <ul>
     {#if transfers.length}
       {#each transfers as transfer}
@@ -15,15 +15,13 @@
   </ul>
 </section>
 
-<section class="card">
-  <h2>History</h2>
-  <ol>
-    {#if group.events.length}
-      {#each [...group.events].reverse() as event (event.id)}
-        <li><strong>{event.description}</strong> — {money(event.amount)} paid by {personName(event.payerId)}<small>{new Date(event.createdAt).toLocaleString()}</small></li>
-      {/each}
+<section class="card" aria-labelledby="everyone-title">
+  <h3 id="everyone-title">Everyone</h3>
+  <ul class="balances">
+    {#each Object.entries(balanceMap) as [personId, balance] (personId)}
+      <li><strong>{personName(personId)}</strong><span>{balance === 0 ? "Settled" : `${balance > 0 ? "Owed" : "Owes"} ${money(Math.abs(balance))}`}</span></li>
     {:else}
-      <li>No expenses yet.</li>
-    {/if}
-  </ol>
+      <li>Add people to see balances.</li>
+    {/each}
+  </ul>
 </section>

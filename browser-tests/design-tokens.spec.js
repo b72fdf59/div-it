@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test("exposes calm light and dark semantic tokens", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Div It" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Activity" })).toBeVisible();
 
   const light = await page.evaluate(() => {
     document.documentElement.dataset.theme = "light";
@@ -49,6 +49,7 @@ test("exposes calm light and dark semantic tokens", async ({ page }) => {
   expect(light.positive).not.toBe(dark.positive);
   expect(light.debt).not.toBe(dark.debt);
 
+  await page.getByRole("button", { name: "Group" }).click();
   for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 720 }]) {
     await page.setViewportSize(viewport);
     await expect(page.getByRole("button", { name: "Export backup" })).toBeVisible();

@@ -65,11 +65,13 @@ Deferred until after the first release: cross-currency expenses and exchange rat
 
 ## Current state
 
-The prototype supports local people, equal and exact expenses, integer-minor-unit balances, settlement suggestions, JSON backup/import, offline assets, and a developer seed script. The reported add-expense failure has an implementation fix, and the small ledger check passes.
+The app supports local people, equal and exact expenses, integer-minor-unit balances, settlement suggestions, JSON backup/import, offline assets, and a developer seed script. Browser regression coverage exercises expense creation, exact splits, reload, and backup round-trip. The UI now uses validated local commands and receives detached snapshots instead of an arbitrary Automerge mutator.
 
-Automerge Repo, IndexedDB storage, and BroadcastChannel synchronization have already been introduced. This is partial Phase 2 work, not a completed sync architecture: the app currently keeps one document ID in `localStorage`, exposes arbitrary document mutation, stores events in a mutable array, and can replace the document during backup import. Same-browser two-tab behavior still needs manual and automated verification.
+The version-one event ADR and pure deterministic ledger engine are implemented, including envelope validation, duplicate/collision handling, pending dependencies, settlements/reversals, revisions/voids, explicit conflict resolution, structured diagnostics, and fixed-seed property tests. These capabilities are not yet connected to the daily app interface: existing expenses still use the prototype shape and balance path.
 
-The product does not yet have the complete event model, revisions, voids, recorded settlements, opening-balance import, conflict handling, participant/device membership, signatures, encryption, multi-device relay, recovery flow, browser smoke tests, or a real-group trial.
+Automerge Repo, IndexedDB storage, and BroadcastChannel synchronization are present. Local persistence still uses one document ID in `localStorage`, an event array, and replacement-based backup import. Two-tab convergence has not yet passed the Phase 2 gate.
+
+The responsive Activity, Balances, and Group shell is implemented (DIV-022). Next are settlement recording, expense revision/void, conflict review, and audit interfaces. Participant/device membership, signatures, encryption, a multi-device relay, encrypted recovery, Splitwise opening-balance import, and the real-group pilot remain incomplete.
 
 ## Work order
 
@@ -80,11 +82,11 @@ Execution-sized tasks, dependencies, and acceptance checks live in [TASKS.md](./
 ### 1. Stabilize the local ledger — active
 
 - [x] Fix the reported add-expense failure.
-- [ ] Add an automated browser smoke test covering people, equal/exact expenses, reload, and backup round-trip; retain the add-expense case as a regression test.
+- [x] Add an automated browser smoke test covering people, equal/exact expenses, reload, and backup round-trip; retain the add-expense case as a regression test.
 - [x] Replace arbitrary `change(mutator)` calls with a typed domain command boundary.
-- [ ] Define versioned event envelopes, IDs, dependencies, validation, and deterministic projection independently of Automerge.
+- [x] Define versioned event envelopes, IDs, dependencies, validation, and deterministic projection independently of Automerge.
 - [ ] Implement expense revision/void, settlement/reversal, and complete audit-history views.
-- [ ] Add tests for every event type and revision chain plus property tests that balances always sum to zero.
+- [x] Add tests for every event type and revision chain plus property tests that balances always sum to zero.
 - [ ] Quarantine invalid and dependency-missing events without corrupting the last valid projection.
 
 Done when the ledger can represent and verify a week of single-currency activity, every change is auditable, and tests demonstrate deterministic balances independent of insertion order or duplication.

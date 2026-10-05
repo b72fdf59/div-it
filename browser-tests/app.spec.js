@@ -4,5 +4,5 @@ test("loads the Div It interface", async ({ page }) => {
   await page.goto("/");
 
   await expect(page).toHaveTitle("Div It");
-  await expect(page.getByRole("heading", { name: "Div It" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Activity" })).toBeVisible();
 });
