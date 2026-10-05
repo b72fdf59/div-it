@@ -20,6 +20,6 @@ function demoState() {
 export async function seedDemo() {
   const state = demoState();
   const group = await openGroup(() => {});
-  group.replace(state);
+  group.importBackup(state);
   return state;
 }

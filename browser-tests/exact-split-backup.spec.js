@@ -47,11 +47,9 @@ test("preserves exact splits through reload and backup round-trip", async ({ bro
   const backupPath = await (await downloadPromise).path();
   assert.ok(backupPath);
   const backup = JSON.parse(await fs.readFile(backupPath, "utf8"));
-  const savedExpense = backup.events.find((event) => event.description === "Shared dinner");
-  assert.deepEqual(savedExpense.splits, [
-    { personId: savedExpense.splits[0].personId, amount: 1234 },
-    { personId: savedExpense.splits[1].personId, amount: 766 }
-  ]);
+  const savedExpense = backup.events.find((event) => event.payload?.description === "Shared dinner");
+  assert.deepEqual(savedExpense.payload.splits.map(({ amount }) => amount), [1234, 766]);
+  assert.equal(savedExpense.groupId, backup.groupId);
 
   const importedContext = await browser.newContext();
   const importedPage = await importedContext.newPage();
@@ -70,5 +68,13 @@ test("preserves exact splits through reload and backup round-trip", async ({ bro
   await importedPage.getByRole("button", { name: "Group" }).click();
   await importedPage.getByRole("button", { name: "Balances" }).click();
   await expect(importedPage.getByRole("heading", { name: "Everyone" }).locator("..")).toContainText("$7.66");
+  const restoredDownload = importedPage.waitForEvent("download");
+  await importedPage.getByRole("button", { name: "Group" }).click();
+  await importedPage.getByRole("button", { name: "Export backup" }).click();
+  const restoredPath = await (await restoredDownload).path();
+  const restoredBackup = JSON.parse(await fs.readFile(restoredPath, "utf8"));
+  assert.equal(restoredBackup.groupId, backup.groupId);
+  assert.deepEqual(restoredBackup.people, backup.people);
+  assert.deepEqual(restoredBackup.events, backup.events);
   await importedContext.close();
 });

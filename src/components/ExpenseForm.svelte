@@ -1,7 +1,7 @@
 <script>
   import { cents } from "../ledger.js";
 
-  let { people, addExpense } = $props();
+  let { people, addExpense, disabled = false } = $props();
   let description = $state("");
   let amountText = $state("");
   let payerId = $state("");
@@ -41,11 +41,11 @@
 <section class="card">
   <h2>Add expense</h2>
   <form onsubmit={(event) => { event.preventDefault(); submit(); }}>
-    <label>Description <input bind:value={description} placeholder="Dinner"></label>
-    <label>Amount <input bind:value={amountText} inputmode="decimal" min="0.01" step="0.01"></label>
+    <label>Description <input bind:value={description} placeholder="Dinner" disabled={disabled}></label>
+    <label>Amount <input bind:value={amountText} inputmode="decimal" min="0.01" step="0.01" disabled={disabled}></label>
     <label>
       Paid by
-      <select bind:value={payerId} disabled={!people.length}>
+      <select bind:value={payerId} disabled={disabled || !people.length}>
         {#each people as person (person.id)}<option value={person.id}>{person.name}</option>{/each}
       </select>
     </label>
@@ -53,21 +53,21 @@
       <legend>Split with</legend>
       {#if people.length}
         {#each people as person (person.id)}
-          <label><input type="checkbox" value={person.id} bind:group={participantIds}> {person.name}</label>
+          <label><input type="checkbox" value={person.id} bind:group={participantIds} disabled={disabled}> {person.name}</label>
         {/each}
       {:else}
         Add people first.
       {/if}
     </fieldset>
-    <label>Split type <select bind:value={splitType}><option value="equal">Equal</option><option value="exact">Exact amounts</option></select></label>
+    <label>Split type <select bind:value={splitType} disabled={disabled}><option value="equal">Equal</option><option value="exact">Exact amounts</option></select></label>
     {#if splitType === "exact"}
       <div class="exact-splits">
         {#each people.filter((person) => participantIds.includes(person.id)) as person (person.id)}
-          <label>{person.name}<input bind:value={exactAmounts[person.id]} inputmode="decimal" min="0.01" step="0.01"></label>
+          <label>{person.name}<input bind:value={exactAmounts[person.id]} inputmode="decimal" min="0.01" step="0.01" disabled={disabled}></label>
         {/each}
       </div>
     {/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}
-    <button type="submit" disabled={!people.length}>{people.length ? "Add expense" : "Add people first"}</button>
+    <button type="submit" disabled={disabled || !people.length}>{people.length ? "Add expense" : "Add people first"}</button>
   </form>
 </section>

@@ -1,5 +1,5 @@
 <script>
-  let { people, addPerson } = $props();
+  let { people, addPerson, disabled = false } = $props();
   let name = $state("");
 
   function submit() {
@@ -13,8 +13,8 @@
 <section class="card people-card">
   <h2>People</h2>
   <form onsubmit={(event) => { event.preventDefault(); submit(); }}>
-    <input bind:value={name} placeholder="Name" aria-label="Person name">
-    <button type="submit">Add</button>
+    <input bind:value={name} placeholder="Name" aria-label="Person name" disabled={disabled}>
+    <button type="submit" disabled={disabled}>Add</button>
   </form>
   <ul class="people">
     {#if people.length}

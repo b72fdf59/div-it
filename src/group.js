@@ -3,10 +3,13 @@ import { BroadcastChannelNetworkAdapter } from "@automerge/automerge-repo-networ
 import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
 import { legacyGroup } from "./legacy.js";
 import { makeExpense } from "./ledger.js";
+import { parseEvent } from "./events.js";
+import { expenseEnvelope, groupIdFromDocumentId, projectGroup, settlementEnvelope } from "./prototype-events.js";
 
 const GROUP_ID_KEY = "div-it-group-id";
 const emptyGroup = () => ({ name: "My group", currency: "USD", people: [], events: [] });
 const currencies = new Set(["USD", "INR", "EUR", "GBP"]);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 let controller;
 
@@ -21,13 +24,51 @@ export function validateGroupSettings({ name, currency }) {
   return { name: name.trim(), currency };
 }
 
+function inspectGroupIds(events) {
+  const ids = new Set();
+  let invalid = false;
+  for (const event of events) {
+    if (event && typeof event === "object" && Object.hasOwn(event, "schemaVersion")) {
+      if (!UUID.test(event.groupId || "")) invalid = true;
+      else ids.add(event.groupId);
+    }
+  }
+  return { id: ids.size === 1 ? [...ids][0] : undefined, ambiguous: ids.size > 1, invalid };
+}
+
+function groupIdInEvents(events) {
+  const result = inspectGroupIds(events);
+  if (result.invalid) throw new Error("Backup contains an invalid ledger group ID.");
+  if (result.ambiguous) throw new Error("Backup contains events from multiple ledger groups.");
+  return result.id;
+}
+
 export function validateBackup(group) {
   if (!group || typeof group !== "object" || Array.isArray(group)
     || typeof group.name !== "string" || typeof group.currency !== "string"
     || !Array.isArray(group.people) || !Array.isArray(group.events)) {
     throw new Error("Not a Div It backup.");
   }
-  return structuredClone({ name: group.name, currency: group.currency, people: group.people, events: group.events });
+  if (group.groupId !== undefined && (typeof group.groupId !== "string" || !UUID.test(group.groupId))) {
+    throw new Error("Backup contains an invalid ledger group ID.");
+  }
+  const eventGroupId = groupIdInEvents(group.events);
+  if (group.groupId && eventGroupId && group.groupId !== eventGroupId) {
+    throw new Error("Backup group ID does not match its events.");
+  }
+  const validated = structuredClone({ name: group.name, currency: group.currency, people: group.people, events: group.events });
+  if (group.groupId || eventGroupId) validated.groupId = group.groupId || eventGroupId;
+  return validated;
+}
+
+function assertWritable(group) {
+  if (group.groupIdentityIssue) throw new Error("This group's ledger identity is ambiguous. Import a valid backup before editing.");
+  if (projectGroup(group).readOnly) throw new Error("This group has unsupported ledger entries and is read-only until the app is updated.");
+}
+
+function assertValidEvent(event) {
+  const parsed = parseEvent(event);
+  if (!parsed.ok) throw new Error(`Invalid ledger entry: ${parsed.reason}.`);
 }
 
 export async function openGroup(onSnapshot) {
@@ -40,6 +81,21 @@ export async function openGroup(onSnapshot) {
   const documentId = localStorage.getItem(GROUP_ID_KEY);
   const handle = documentId ? await repo.find(documentId) : repo.create((await legacyGroup()) || emptyGroup());
 
+  const snapshot = handle.doc();
+  const eventGroups = inspectGroupIds(snapshot.events);
+  const storedGroupId = UUID.test(snapshot.groupId || "") ? snapshot.groupId : undefined;
+  const groupIdentityIssue = snapshot.groupId !== undefined && !storedGroupId
+    || eventGroups.ambiguous
+    || !storedGroupId && eventGroups.invalid;
+  const groupId = storedGroupId || (!eventGroups.ambiguous && !eventGroups.invalid && eventGroups.id)
+    || groupIdFromDocumentId(handle.documentId);
+  if (!storedGroupId || snapshot.groupIdentityIssue !== groupIdentityIssue) {
+    handle.change((document) => {
+      document.groupId = groupId;
+      document.groupIdentityIssue = groupIdentityIssue;
+    });
+  }
+
   if (!documentId) localStorage.setItem(GROUP_ID_KEY, handle.documentId);
   const publish = (doc) => onSnapshot(structuredClone(doc));
   handle.on("change", ({ doc }) => publish(doc));
@@ -48,27 +104,82 @@ export async function openGroup(onSnapshot) {
   controller = {
     saveSettings(input) {
       const settings = validateGroupSettings(input);
+      assertWritable(handle.doc());
+      if (settings.currency !== handle.doc().currency && handle.doc().events.length) {
+        throw new Error("A group's currency can't change after ledger entries are recorded.");
+      }
       handle.change((document) => Object.assign(document, settings));
     },
     addPerson(input) {
+      assertWritable(handle.doc());
       const name = validatePersonName(input);
       const person = { id: crypto.randomUUID(), name };
       handle.change((document) => document.people.push(person));
       return person;
     },
     addExpense(input) {
+      assertWritable(handle.doc());
       const expense = makeExpense(input);
       const snapshot = handle.doc();
       const peopleIds = new Set(snapshot.people.map(({ id }) => id));
       if (!peopleIds.has(expense.payerId) || expense.splits.some(({ personId }) => !peopleIds.has(personId))) {
         throw new Error("Choose people in this group for the payer and split.");
       }
-      handle.change((document) => document.events.push(expense));
-      return expense;
+      const event = expenseEnvelope(expense, { groupId: snapshot.groupId || groupId, currency: snapshot.currency });
+      assertValidEvent(event);
+      handle.change((document) => document.events.push(event));
+      return event;
+    },
+    recordSettlement(input) {
+      const { fromParticipantId, toParticipantId, amount } = input || {};
+      if (!Number.isSafeInteger(amount) || amount <= 0) throw new Error("Enter a settlement amount greater than zero.");
+      const current = handle.doc();
+      assertWritable(current);
+      const peopleIds = new Set(current.people.map(({ id }) => id));
+      if (!peopleIds.has(fromParticipantId) || !peopleIds.has(toParticipantId) || fromParticipantId === toParticipantId) {
+        throw new Error("Choose two different people in this group.");
+      }
+      const event = settlementEnvelope({
+        type: "settlement-recorded",
+        groupId: current.groupId,
+        payload: {
+          settlementId: crypto.randomUUID(),
+          currency: current.currency,
+          fromParticipantId,
+          toParticipantId,
+          amount
+        }
+      });
+      assertValidEvent(event);
+      handle.change((document) => document.events.push(event));
+      return event;
+    },
+    reverseSettlement(input) {
+      const { eventId, reason } = input || {};
+      if (typeof reason !== "string" || !reason.trim() || [...reason.trim()].length > 500) {
+        throw new Error("Enter a reversal reason of 1 to 500 characters.");
+      }
+      const current = handle.doc();
+      assertWritable(current);
+      const projection = projectGroup(current);
+      const target = projection.effective.find((event) => event.id === eventId && event.type === "settlement-recorded");
+      const reversedIds = new Set(projection.effective.filter((event) => event.type === "settlement-reversed").map(({ payload }) => payload.settlementId));
+      if (!target || reversedIds.has(target.payload.settlementId)) throw new Error("This settlement is no longer active.");
+      const event = settlementEnvelope({
+        type: "settlement-reversed",
+        groupId: current.groupId,
+        dependsOn: [target.id],
+        payload: { settlementId: target.payload.settlementId, reversesEventId: target.id, reason: reason.trim() }
+      });
+      assertValidEvent(event);
+      handle.change((document) => document.events.push(event));
+      return event;
     },
     importBackup(input) {
       const group = validateBackup(input);
       handle.change((document) => {
+        if (group.groupId) document.groupId = group.groupId;
+        document.groupIdentityIssue = false;
         document.name = group.name;
         document.currency = group.currency;
         document.people = group.people;

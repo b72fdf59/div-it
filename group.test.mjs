@@ -21,3 +21,11 @@ test("legacy prototype backup shape is accepted as a detached copy", () => {
   assert.equal(backup.people[0].name, "Ana");
   assert.throws(() => validateBackup({ people: [], events: [] }), /Not a Div It backup/);
 });
+
+test("modern backup keeps the group identity carried by its events", () => {
+  const groupId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const event = { id: "11111111-1111-4111-8111-111111111111", schemaVersion: 1, groupId };
+  assert.equal(validateBackup({ name: "Trip", currency: "USD", people: [], events: [event] }).groupId, groupId);
+  assert.throws(() => validateBackup({ name: "Trip", currency: "USD", groupId, people: [], events: [{ ...event, groupId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }] }), /does not match/);
+  assert.throws(() => validateBackup({ name: "Trip", currency: "USD", people: [], events: [event, { ...event, id: "21111111-1111-4111-8111-111111111111", groupId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }] }), /multiple ledger groups/);
+});

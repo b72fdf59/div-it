@@ -67,11 +67,11 @@ Deferred until after the first release: cross-currency expenses and exchange rat
 
 The app supports local people, equal and exact expenses, integer-minor-unit balances, settlement suggestions, JSON backup/import, offline assets, and a developer seed script. Browser regression coverage exercises expense creation, exact splits, reload, and backup round-trip. The UI now uses validated local commands and receives detached snapshots instead of an arbitrary Automerge mutator.
 
-The version-one event ADR and pure deterministic ledger engine are implemented, including envelope validation, duplicate/collision handling, pending dependencies, settlements/reversals, revisions/voids, explicit conflict resolution, structured diagnostics, and fixed-seed property tests. These capabilities are not yet connected to the daily app interface: existing expenses still use the prototype shape and balance path.
+The version-one event ADR and pure deterministic ledger engine are implemented, including envelope validation, duplicate/collision handling, pending dependencies, settlements/reversals, revisions/voids, explicit conflict resolution, structured diagnostics, and fixed-seed property tests. The app now projects versioned events for balances and history, supports settlement recording and reversal, and writes new expenses and settlements as versioned events. Older prototype expenses remain stored unchanged and are normalized at read time. Prototype attribution and signatures are placeholders until device identity exists.
 
-Automerge Repo, IndexedDB storage, and BroadcastChannel synchronization are present. Local persistence still uses one document ID in `localStorage`, an event array, and replacement-based backup import. Two-tab convergence has not yet passed the Phase 2 gate.
+Automerge Repo, IndexedDB storage, and BroadcastChannel synchronization are present. Local persistence still uses one document ID in `localStorage`, an event array, and replacement-based backup import. The array remains until DIV-030 and old event migration remains until DIV-031. Two-tab convergence has not yet passed the Phase 2 gate.
 
-The responsive Activity, Balances, and Group shell is implemented (DIV-022). Next are settlement recording, expense revision/void, conflict review, and audit interfaces. Participant/device membership, signatures, encryption, a multi-device relay, encrypted recovery, Splitwise opening-balance import, and the real-group pilot remain incomplete.
+The responsive Activity, Balances, and Group shell is implemented (DIV-022). Next are expense revision/void, conflict review, and audit interfaces. Participant/device membership, signatures, encryption, a multi-device relay, encrypted recovery, Splitwise opening-balance import, and the real-group pilot remain incomplete.
 
 ## Work order
 

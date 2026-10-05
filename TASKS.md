@@ -249,7 +249,7 @@ Status meanings:
 
 ### DIV-023 — Add settlement recording UI
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-013, DIV-022
 - Deliverable: Let a member record and reverse a manual settlement.
 - Acceptance:
