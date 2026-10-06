@@ -345,7 +345,7 @@ Status meanings:
 
 ### DIV-034 — Test CRDT delivery pathologies
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-032, DIV-033
 - Deliverable: Exercise duplicate, reversed, delayed, missing-dependency, malformed, and incompatible events through Automerge rather than only through the pure projector.
 - Acceptance:
@@ -354,7 +354,7 @@ Status meanings:
 
 ### DIV-035 — Automate two-tab convergence
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-034
 - Deliverable: Add browser tests for offline edits in two tabs, reconnection, convergence, and explicit conflict resolution.
 - Acceptance:

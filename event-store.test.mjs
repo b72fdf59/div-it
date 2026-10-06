@@ -25,6 +25,46 @@ function validExpense(id, description = "Same content") {
   };
 }
 
+const groupId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const author = { participantId: "local-prototype", deviceId: "local-prototype-device", keyId: "development-only" };
+function domainEvent(id, type, payload, dependsOn = [], overrides = {}) {
+  return {
+    id, type, schemaVersion: 1, protocolVersion: 1, groupId, author,
+    createdAt: "2026-09-05T10:00:00.000Z", dependsOn: [...dependsOn].sort(), payload,
+    signature: "development-only", ...overrides
+  };
+}
+
+function created(id, expenseId, amount = 1000) {
+  return domainEvent(id, "expense-created", {
+    expenseId, description: `Expense ${expenseId}`, currency: "USD", amount, payerId: "alice",
+    splits: [{ participantId: "alice", amount: amount / 2 }, { participantId: "bob", amount: amount / 2 }]
+  });
+}
+
+function snapshot(document) {
+  const events = eventsFromDocument(document);
+  const group = { groupId, currency: "USD", people: [{ id: "alice" }, { id: "bob" }], events };
+  const projection = projectGroup(group);
+  return {
+    events: events.map(canonicalEventContent),
+    diagnostics: {
+      pending: projection.pending.map(({ event, reason, missingDependencyIds }) => ({ id: event.id, reason, missingDependencyIds })),
+      conflicting: projection.conflicting, quarantined: projection.quarantined,
+      unsupported: projection.unsupported, duplicates: projection.duplicates, ignored: projection.ignored, readOnly: projection.readOnly
+    },
+    effective: projection.effective.map(({ id, type, payload }) => ({ id, type, payload })),
+    balances: projection.balances,
+    audit: auditEntries(group, projection)
+  };
+}
+
+function appendReplica(base, events) {
+  return Automerge.change(Automerge.clone(base), (draft) => {
+    for (const event of events) appendStoredEvent(draft, event);
+  });
+}
+
 function initial(events = []) {
   return Automerge.from({ events: [], eventsById: eventMapFromArray(events) });
 }
@@ -258,4 +298,90 @@ test("concurrent migrations and independent writes preserve arrays, flat variant
   }
   assert.deepEqual(projections[0], projections[1]);
   assert.deepEqual(audits[0], audits[1]);
+});
+
+test("Automerge delivery order converges through duplicate, reversed, delayed, malformed and incompatible events", () => {
+  const baseEventId = "10111111-1111-4111-8111-111111111111";
+  const revisionId = "20222222-2222-4222-8222-222222222222";
+  const settlementId = "30333333-3333-4333-8333-333333333333";
+  const missingDependencyId = "40444444-4444-4444-8444-444444444444";
+  const malformedId = "50555555-5555-4555-8555-555555555555";
+  const foreignId = "60666666-6666-4666-8666-666666666666";
+  const futureId = "70777777-7777-4777-8777-777777777777";
+  const expenseId = "80888888-8888-4888-8888-888888888888";
+  const baseEvent = created(baseEventId, expenseId, 2000);
+  const revision = domainEvent(revisionId, "expense-revised", {
+    expenseId, supersedesEventId: baseEventId, description: "Revised after delivery", currency: "USD", amount: 3000,
+    payerId: "bob", splits: [{ participantId: "alice", amount: 1500 }, { participantId: "bob", amount: 1500 }]
+  }, [baseEventId]);
+  const prerequisite = domainEvent(missingDependencyId, "settlement-recorded", {
+    settlementId, currency: "USD", fromParticipantId: "alice", toParticipantId: "bob", amount: 200
+  });
+  const reversal = domainEvent("41444444-4444-4444-8444-444444444444", "settlement-reversed", {
+    settlementId, reversesEventId: missingDependencyId, reason: "Delayed correction"
+  }, [missingDependencyId]);
+  const malformed = { id: malformedId, type: "expense-created", schemaVersion: 1, protocolVersion: 1,
+    groupId, author, createdAt: "2026-09-05T10:00:00.000Z", dependsOn: [], payload: { broken: true }, signature: "development-only" };
+  const foreign = { ...created(foreignId, "90999999-9999-4999-8999-999999999999"), groupId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" };
+  const future = { ...created(futureId, "91999999-9999-4999-8999-999999999999"), schemaVersion: 2,
+    payload: { ...created(futureId, "91999999-9999-4999-8999-999999999999").payload, extension: [1, 2] } };
+
+  // Replica A has the expense and malformed/foreign records; B has a duplicate expense,
+  // a dependent revision, and a future event; C has the domain prerequisite.
+  const deliveryBase = initial();
+  const a = appendReplica(deliveryBase, [baseEvent, malformed, foreign]);
+  const b = appendReplica(deliveryBase, [baseEvent, revision, reversal, future]);
+  const c = appendReplica(deliveryBase, [prerequisite]);
+  const partialAB = Automerge.merge(a, b);
+  const partialBA = Automerge.merge(b, a);
+  const partialSnapshot = snapshot(partialAB);
+  assert.deepEqual(snapshot(partialBA), partialSnapshot);
+  assert.ok(partialSnapshot.diagnostics.duplicates.some(({ id }) => id === baseEventId));
+  assert.ok(partialSnapshot.diagnostics.pending.some(({ id }) => id === reversal.id), "present event with missing domain dependency is pending");
+  assert.ok(partialSnapshot.diagnostics.quarantined.some(({ id, reason }) => id === malformedId && reason === "invalid-payload"));
+  assert.ok(partialSnapshot.diagnostics.quarantined.some(({ id, reason }) => id === foreignId && reason === "group-mismatch"));
+  assert.ok(partialSnapshot.diagnostics.unsupported.some(({ id }) => id === futureId));
+  assert.equal(partialSnapshot.diagnostics.readOnly, true);
+  assert.equal(partialSnapshot.effective.length, 1, "duplicate base expense applies once; pending reversal is not effective");
+
+  // Delay the Automerge change containing the prerequisite: it is absent, not pending,
+  // until C's change is actually merged. Then deliver changes in opposite merge orders.
+  const delayed = snapshot(a);
+  assert.ok(!delayed.events.some((serialized) => JSON.parse(serialized).id === missingDependencyId));
+  const deliveredABC = Automerge.merge(Automerge.clone(partialAB), Automerge.clone(c));
+  const deliveredCBA = Automerge.merge(Automerge.clone(c), Automerge.clone(partialBA));
+  const expected = snapshot(deliveredABC);
+  assert.deepEqual(snapshot(deliveredCBA), expected);
+  assert.ok(expected.effective.some(({ id }) => id === revisionId), "revision becomes effective after its domain dependency arrives");
+  assert.ok(expected.effective.some(({ id }) => id === reversal.id), "reversal becomes effective after its Automerge change arrives");
+  assert.ok(!expected.diagnostics.pending.some(({ id }) => id === reversal.id));
+  assert.deepEqual(expected.balances, { alice: -1500, bob: 1500 }, "revision applies and the settlement/reversal pair nets to zero");
+  assert.deepEqual(expected, snapshot(Automerge.load(Automerge.save(deliveredCBA))));
+});
+
+test("concurrent revision branches stay financially neutral regardless of Automerge merge direction", () => {
+  const baseId = "11111111-aaaa-4111-8111-111111111111";
+  const leftId = "22222222-aaaa-4222-8222-222222222222";
+  const rightId = "33333333-aaaa-4333-8333-333333333333";
+  const expenseId = "44444444-aaaa-4444-8444-444444444444";
+  const root = created(baseId, expenseId, 2000);
+  const revise = (id, description, amount, payerId) => domainEvent(id, "expense-revised", {
+    expenseId, supersedesEventId: baseId, description, currency: "USD", amount, payerId,
+    splits: [{ participantId: "alice", amount: amount / 2 }, { participantId: "bob", amount: amount / 2 }]
+  }, [baseId]);
+  const leftEvent = revise(leftId, "Concurrent left", 3000, "alice");
+  const rightEvent = revise(rightId, "Concurrent right", 4000, "bob");
+  const base = appendReplica(initial(), [root]);
+  const left = appendReplica(base, [leftEvent]);
+  const right = appendReplica(base, [rightEvent]);
+  const leftFirst = Automerge.merge(left, right);
+  const rightFirst = Automerge.merge(right, left);
+  const expected = snapshot(leftFirst);
+  assert.deepEqual(snapshot(rightFirst), expected);
+  assert.deepEqual(expected.balances, { alice: 1000, bob: -1000 }, "competing branches preserve the uncontested base projection");
+  assert.deepEqual(expected.effective.map(({ id }) => id), [baseId]);
+  assert.deepEqual(expected.diagnostics.conflicting.map(({ id, reason }) => ({ id, reason })), [
+    { id: leftId, reason: "conflicting-revision" }, { id: rightId, reason: "conflicting-revision" }
+  ]);
+  assert.deepEqual(expected, snapshot(Automerge.load(Automerge.save(rightFirst))));
 });

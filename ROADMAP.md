@@ -100,7 +100,7 @@ Gate evidence: [Phase 1 review](./docs/review/phase-1-gate.md) records the deter
 - [x] Migrate published pre-CRDT IndexedDB and Automerge array formats additively on open, preserving raw records and retrying late legacy appends.
 - [x] Add a local group registry and basic switcher while retaining one Automerge document per group.
 - [x] Make restore merge event sets rather than replace a live document.
-- [ ] Test duplicate, reversed, delayed, dependency-missing, malformed, and incompatible events.
+- [x] Test duplicate, reversed, delayed, dependency-missing, malformed, and incompatible events through Automerge replicas; see [DIV-034 delivery evidence](./docs/review/div-034-delivery.md).
 - [ ] Automate two-tab offline edits, reconnection, convergence, conflict display, and equal projections.
 - [ ] Manually verify the same scenarios in two tabs before proceeding.
 
