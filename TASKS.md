@@ -354,7 +354,7 @@ Status meanings:
 
 ### DIV-035 — Automate two-tab convergence
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-034
 - Deliverable: Add browser tests for offline edits in two tabs, reconnection, convergence, and explicit conflict resolution.
 - Acceptance:

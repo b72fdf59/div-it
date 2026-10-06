@@ -195,10 +195,23 @@ export function currentConflictChoice(group, input) {
 export async function openGroup(onSnapshot) {
   if (controller) return controller;
 
+  const testReplica = import.meta.env.DEV && new URLSearchParams(location.search).has("testReplica");
   const repo = new Repo({
-    storage: new IndexedDBStorageAdapter(),
+    storage: testReplica ? undefined : new IndexedDBStorageAdapter(),
     network: [new BroadcastChannelNetworkAdapter()],
   });
+  if (import.meta.env.DEV && new URLSearchParams(location.search).has("testSync")) {
+    window.__divItTestSync = {
+      disconnect: () => repo.networkSubsystem.disconnect(),
+      exportBinary: async () => Array.from(await repo.export(handle.documentId)),
+      reconnect: () => {
+        for (const adapter of [...repo.networkSubsystem.adapters]) {
+          repo.networkSubsystem.removeNetworkAdapter(adapter);
+        }
+        repo.networkSubsystem.addNetworkAdapter(new BroadcastChannelNetworkAdapter());
+      }
+    };
+  }
   const validRegistry = (value) => value && value.version === 1 && Array.isArray(value.groups)
     && value.groups.every((item) => item && typeof item.documentId === "string" && typeof item.name === "string");
   let registry;
@@ -210,6 +223,10 @@ export async function openGroup(onSnapshot) {
     ? registry.activeDocumentId : null;
   let handle;
   if (activeId) {
+    if (testReplica) {
+      const binary = sessionStorage.getItem("div-it-test-replica");
+      if (binary) repo.import(Uint8Array.from(JSON.parse(binary)), { docId: activeId });
+    }
     handle = await repo.find(activeId);
   } else {
     const legacyDocumentId = localStorage.getItem(GROUP_ID_KEY);

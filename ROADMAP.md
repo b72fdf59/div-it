@@ -101,7 +101,7 @@ Gate evidence: [Phase 1 review](./docs/review/phase-1-gate.md) records the deter
 - [x] Add a local group registry and basic switcher while retaining one Automerge document per group.
 - [x] Make restore merge event sets rather than replace a live document.
 - [x] Test duplicate, reversed, delayed, dependency-missing, malformed, and incompatible events through Automerge replicas; see [DIV-034 delivery evidence](./docs/review/div-034-delivery.md).
-- [ ] Automate two-tab offline edits, reconnection, convergence, conflict display, and equal projections.
+- [x] Automate two-tab offline edits, reconnection, convergence, conflict display, and equal projections; see [DIV-035 two-tab evidence](./docs/review/div-035-two-tab.md).
 - [ ] Manually verify the same scenarios in two tabs before proceeding.
 
 Done when two browser tabs can edit offline, reconnect, converge on identical valid event sets and balances, and expose every money conflict for explicit resolution.
