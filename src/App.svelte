@@ -12,6 +12,10 @@
   import { expenseConflictReviews, projectGroup } from "./prototype-events.js";
 
   let group = $state.raw({ name: "My group", currency: "USD", people: [], events: [] });
+  let localGroups = $state([]);
+  let activeDocumentId = $state("");
+  let selectedGroupId = $state("");
+  let switchingGroup = $state(false);
   let ready = $state(false);
   let statusMessage = $state("");
   let activeView = $state("activity");
@@ -51,12 +55,53 @@
   }
 
   onMount(async () => {
-    groupController = await openGroup((nextGroup) => {
+    groupController = await openGroup((nextGroup, registryState) => {
+      if (activeDocumentId && registryState.activeDocumentId !== activeDocumentId) {
+        if (expenseDialog?.open) expenseDialog.close();
+        if (revisionDialog?.open) revisionDialog.close();
+        activeView = "activity";
+        showAudit = false;
+        auditFilter = null;
+        editingEventId = "";
+        editingPayload = null;
+        voidingEventId = "";
+        voidReason = "";
+        reversingEventId = "";
+        reversalReason = "";
+        statusMessage = "";
+      }
       group = nextGroup;
+      localGroups = registryState.groups;
+      activeDocumentId = registryState.activeDocumentId;
+      selectedGroupId = registryState.activeDocumentId;
       ready = true;
     });
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
   });
+
+  async function switchGroup(event) {
+    selectedGroupId = event.currentTarget.value;
+    switchingGroup = true;
+    try {
+      await groupController.switchGroup(selectedGroupId);
+    } catch (cause) {
+      statusMessage = cause.message;
+      selectedGroupId = activeDocumentId;
+    } finally {
+      switchingGroup = false;
+    }
+  }
+
+  async function createGroup() {
+    switchingGroup = true;
+    try {
+      await groupController.createGroup();
+    } catch (cause) {
+      statusMessage = cause.message;
+    } finally {
+      switchingGroup = false;
+    }
+  }
 
   function addPerson(name) {
     try {
@@ -179,9 +224,18 @@
 
 {#if ready}
   <main class="app-shell">
+    {#key activeDocumentId}
     <header class="app-header">
       <p class="eyebrow">GROUP</p>
       <h1>{group.name}</h1>
+      <div class="group-switcher">
+        <label>Current group
+          <select aria-label="Current group" value={selectedGroupId} onchange={switchGroup} disabled={switchingGroup}>
+            {#each localGroups as item (item.documentId)}<option value={item.documentId}>{item.name}</option>{/each}
+          </select>
+        </label>
+        <button type="button" class="secondary-action" aria-label="Create new" onclick={createGroup} disabled={switchingGroup}>New</button>
+      </div>
       <p class="prototype-attribution">Local prototype only: participant attribution is a placeholder and signatures are not active.</p>
       <p id="notice" aria-live="polite">{statusMessage}</p>
     </header>
@@ -299,6 +353,7 @@
         <p>This expense changed since the form opened. Close it and review the current activity.</p>
       {/if}
     </dialog>
+    {/key}
   </main>
 {:else}
   <main><p>Loading local group…</p></main>

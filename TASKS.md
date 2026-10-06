@@ -335,7 +335,7 @@ Status meanings:
 
 ### DIV-033 — Add a local group registry
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-031
 - Deliverable: Replace the single localStorage document ID with a local registry and connect the approved basic group switcher.
 - Acceptance:
@@ -345,7 +345,7 @@ Status meanings:
 
 ### DIV-034 — Test CRDT delivery pathologies
 
-- Status: BLOCKED
+- Status: READY
 - Depends on: DIV-032, DIV-033
 - Deliverable: Exercise duplicate, reversed, delayed, missing-dependency, malformed, and incompatible events through Automerge rather than only through the pure projector.
 - Acceptance:

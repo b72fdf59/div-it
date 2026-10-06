@@ -8,6 +8,7 @@ import { conflictResolutionEnvelope, expenseChangeEnvelope, expenseConflictRevie
 import { appendStoredEvent, eventsFromDocument, migrateEventStore, needsEventStoreMigration } from "./event-store.js";
 
 const GROUP_ID_KEY = "div-it-group-id";
+const GROUP_REGISTRY_KEY = "div-it-groups";
 const emptyGroup = () => ({ name: "My group", currency: "USD", people: [], events: [], eventsById: {} });
 const currencies = new Set(["USD", "INR", "EUR", "GBP"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -198,34 +199,128 @@ export async function openGroup(onSnapshot) {
     storage: new IndexedDBStorageAdapter(),
     network: [new BroadcastChannelNetworkAdapter()],
   });
-  const documentId = localStorage.getItem(GROUP_ID_KEY);
-  const handle = documentId ? await repo.find(documentId) : repo.create((await legacyGroup()) || emptyGroup());
-
-  if (needsEventStoreMigration(handle.doc())) {
-    handle.change((document) => migrateEventStore(document));
+  const validRegistry = (value) => value && value.version === 1 && Array.isArray(value.groups)
+    && value.groups.every((item) => item && typeof item.documentId === "string" && typeof item.name === "string");
+  let registry;
+  try {
+    const stored = JSON.parse(localStorage.getItem(GROUP_REGISTRY_KEY) || "null");
+    if (validRegistry(stored)) registry = stored;
+  } catch { /* Rebuild from the prior single-group key below. */ }
+  let activeId = registry?.groups.some(({ documentId }) => documentId === registry.activeDocumentId)
+    ? registry.activeDocumentId : null;
+  let handle;
+  if (activeId) {
+    handle = await repo.find(activeId);
+  } else {
+    const legacyDocumentId = localStorage.getItem(GROUP_ID_KEY);
+    handle = legacyDocumentId ? await repo.find(legacyDocumentId) : repo.create((await legacyGroup()) || emptyGroup());
+    activeId = handle.documentId;
+    registry = { version: 1, activeDocumentId: activeId, groups: [{ documentId: activeId, name: handle.doc().name || "My group" }] };
+    if (!legacyDocumentId) localStorage.setItem(GROUP_ID_KEY, activeId);
+    localStorage.setItem(GROUP_REGISTRY_KEY, JSON.stringify(registry));
   }
-
-  const snapshot = snapshotGroup(handle.doc());
-  const eventGroups = inspectGroupIds(snapshot.events);
-  const storedGroupId = UUID.test(snapshot.groupId || "") ? snapshot.groupId : undefined;
-  const groupIdentityIssue = snapshot.groupId !== undefined && !storedGroupId
-    || eventGroups.ambiguous
-    || !storedGroupId && eventGroups.invalid;
-  const groupId = storedGroupId || (!eventGroups.ambiguous && !eventGroups.invalid && eventGroups.id)
-    || groupIdFromDocumentId(handle.documentId);
-  if (!storedGroupId || snapshot.groupIdentityIssue !== groupIdentityIssue) {
-    handle.change((document) => {
-      document.groupId = groupId;
-      document.groupIdentityIssue = groupIdentityIssue;
+  if (!registry.groups.some(({ documentId }) => documentId === activeId)) {
+    registry.groups.push({ documentId: activeId, name: handle.doc().name || "My group" });
+  }
+  registry.activeDocumentId = activeId;
+  let generation = 0;
+  let activeListener;
+  let groupId;
+  const persistRegistry = () => localStorage.setItem(GROUP_REGISTRY_KEY, JSON.stringify(registry));
+  const publish = (doc, token) => {
+    if (token !== generation || !handle) return;
+    const entry = registry.groups.find(({ documentId }) => documentId === handle.documentId);
+    if (entry && entry.name !== doc.name) {
+      entry.name = doc.name;
+      persistRegistry();
+    }
+    onSnapshot(snapshotGroup(doc), {
+      activeDocumentId: handle.documentId,
+      groups: registry.groups.map((item) => ({ ...item }))
     });
-  }
+  };
+  const detach = () => {
+    if (handle && activeListener) handle.off("change", activeListener);
+    activeListener = undefined;
+  };
+  const activate = (nextHandle, token) => {
+    if (token !== generation) return false;
+    detach();
+    handle = nextHandle;
+    if (needsEventStoreMigration(handle.doc())) handle.change((document) => migrateEventStore(document));
+    const snapshot = snapshotGroup(handle.doc());
+    const eventGroups = inspectGroupIds(snapshot.events);
+    const storedGroupId = UUID.test(snapshot.groupId || "") ? snapshot.groupId : undefined;
+    const groupIdentityIssue = snapshot.groupId !== undefined && !storedGroupId
+      || eventGroups.ambiguous
+      || !storedGroupId && eventGroups.invalid;
+    groupId = storedGroupId || (!eventGroups.ambiguous && !eventGroups.invalid && eventGroups.id)
+      || groupIdFromDocumentId(handle.documentId);
+    if (!storedGroupId || snapshot.groupIdentityIssue !== groupIdentityIssue) {
+      handle.change((document) => {
+        document.groupId = groupId;
+        document.groupIdentityIssue = groupIdentityIssue;
+      });
+    }
+    registry.activeDocumentId = handle.documentId;
+    if (!registry.groups.some(({ documentId }) => documentId === handle.documentId)) {
+      registry.groups.push({ documentId: handle.documentId, name: handle.doc().name || "My group" });
+    }
+    persistRegistry();
+    const subscribedToken = token;
+    activeListener = ({ doc }) => publish(doc, subscribedToken);
+    handle.on("change", activeListener);
+    publish(handle.doc(), token);
+    return true;
+  };
 
-  if (!documentId) localStorage.setItem(GROUP_ID_KEY, handle.documentId);
-  const publish = (doc) => onSnapshot(snapshotGroup(doc));
-  handle.on("change", ({ doc }) => publish(doc));
-  publish(handle.doc());
+  const initialToken = ++generation;
+  activate(handle, initialToken);
 
   controller = {
+    getGroups() {
+      return registry.groups.map((item) => ({ ...item }));
+    },
+    getActiveDocumentId() {
+      return handle.documentId;
+    },
+    async switchGroup(documentId) {
+      if (!registry.groups.some((item) => item.documentId === documentId)) throw new Error("Choose a group in this browser.");
+      if (registry.activeDocumentId === documentId && activeListener) return true;
+      const previousHandle = handle;
+      const previousId = registry.activeDocumentId;
+      const token = ++generation;
+      detach();
+      registry.activeDocumentId = documentId;
+      persistRegistry();
+      let nextHandle;
+      try {
+        nextHandle = await repo.find(documentId);
+      } catch (cause) {
+        if (token === generation) {
+          registry.activeDocumentId = previousId;
+          persistRegistry();
+          activate(previousHandle, token);
+        }
+        throw cause;
+      }
+      if (token !== generation) return false;
+      return activate(nextHandle, token);
+    },
+    async createGroup() {
+      const baseName = "New group";
+      const names = new Set(registry.groups.map(({ name }) => name));
+      let name = baseName;
+      for (let index = 2; names.has(name); index++) name = `${baseName} ${index}`;
+      const newHandle = repo.create({ ...emptyGroup(), name });
+      const token = ++generation;
+      detach();
+      registry.groups.push({ documentId: newHandle.documentId, name });
+      registry.activeDocumentId = newHandle.documentId;
+      persistRegistry();
+      activate(newHandle, token);
+      return newHandle.documentId;
+    },
     saveSettings(input) {
       const settings = validateGroupSettings(input);
       const current = snapshotGroup(handle.doc());
