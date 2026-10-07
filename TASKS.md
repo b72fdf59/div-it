@@ -434,7 +434,7 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
 
 ### DIV-102 — Persist the local device signing identity
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-101
 - Deliverable: Persist a browser-generated non-extractable Ed25519 CryptoKey pair and stable device/key IDs in IndexedDB behind a narrow get-or-create device identity API. Keep keys outside group documents and backups; do not activate identity in the existing UI yet.
 - Acceptance:
@@ -444,3 +444,15 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
   - Private-key export remains prohibited after storage round-trip.
   - Unavailable crypto/storage and invalid persisted records fail explicitly without silently replacing an existing identity.
   - Browser tests and existing unit/build checks pass; root review precedes DONE.
+
+### DIV-103 — Signed group genesis and explicit trust pinning
+
+- Status: READY
+- Depends on: DIV-102
+- Deliverable: Define the exact group-created membership record schema in ADR-0002 and implement local signed genesis creation plus verification against an explicitly supplied trusted genesis ID and public-key fingerprint. Use the persistent device identity; keep integration behind a module API until the signed membership/projector flow is available.
+- Acceptance:
+  - Schema fixes required fields and bounds, UUIDs, initial owner/device/key bindings, raw public key encoding, empty genesis frontiers, currency and group name.
+  - Locally created genesis verifies with its pinned ID and key; altered content, creator binding, wrong pin/key, unsupported versions, malformed key/signature and non-empty genesis heads fail closed.
+  - A foreign self-signed genesis is not trusted without an explicit matching trust pin; never infer trust from signature validity alone.
+  - Deterministic fingerprints bind the public key; no private keys appear in serialized genesis or ordinary backup data.
+  - Unit and browser checks, existing tests, build, and root review pass before DONE.
