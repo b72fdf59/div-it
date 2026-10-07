@@ -447,7 +447,7 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
 
 ### DIV-103 — Signed group genesis and explicit trust pinning
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-102
 - Deliverable: Define the exact group-created membership record schema in ADR-0002 and implement local signed genesis creation plus verification against an explicitly supplied trusted genesis ID and public-key fingerprint. Use the persistent device identity; keep integration behind a module API until the signed membership/projector flow is available.
 - Acceptance:
@@ -456,3 +456,17 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
   - A foreign self-signed genesis is not trusted without an explicit matching trust pin; never infer trust from signature validity alone.
   - Deterministic fingerprints bind the public key; no private keys appear in serialized genesis or ordinary backup data.
   - Unit and browser checks, existing tests, build, and root review pass before DONE.
+
+### DIV-104 — Initial signed membership graph and participant roster
+
+- Status: READY
+- Depends on: DIV-103
+- Deliverable: Define exact bounded membership schemas and implement a deterministic graph projection for trusted genesis, participant-added, participant-renamed, organizer-granted and organizer-revoked. Verify every signature against the authorized key at its membership heads. Preserve raw records and expose stable effective/pending/conflicting/quarantined/unsupported diagnostics. This slice starts with the genesis device only; additional-device enrollment follows.
+- Acceptance:
+  - Only the current owner grants/revokes organizer roles; only an authorized organizer adds/renames participants. A participant without an enrolled device cannot sign.
+  - Missing references are pending; cross-group references, cycles, bad signatures and unauthorized transitions never affect projected state.
+  - Duplicate records are idempotent; same-ID different content is quarantined, never selected by arrival order.
+  - Independent graph branches combine; conflicting role transitions retain the prior role, and concurrent differing names retain the prior name with visible conflict diagnostics.
+  - Unsupported records are retained and reported; unsupported membership changes prevent further authoring, with no silent downgrade.
+  - Reordered delivery produces equal roster, roles, heads and diagnostics; inputs remain unmodified.
+  - Full unit/build and relevant browser checks pass; root reviews before DONE. Do not activate production identity or claim complete membership until enrollment/revocation and signed-ledger integration land.

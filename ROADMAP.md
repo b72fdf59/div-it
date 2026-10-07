@@ -73,6 +73,8 @@ Automerge Repo, IndexedDB storage, and BroadcastChannel synchronization are pres
 
 The responsive Activity, Balances, and Group shell, branch review, explicit conflict resolution, and complete audit history are implemented (DIV-022, DIV-025, DIV-026). Competing amount, payer, split, and later branch values are shown without preselecting a winner; stale branch, descendant, and resolution snapshots are rejected. The Phase 1 gate is complete (DIV-027); participant/device membership, signatures, encryption, a multi-device relay, encrypted recovery, Splitwise opening-balance import, and the real-group pilot remain incomplete.
 
+Identity foundations are implemented (DIV-101 and DIV-102): RFC 8785 signed-record bytes, native Ed25519 signing/verification, and stable non-extractable device keys in IndexedDB with concurrent-tab and corruption checks. These APIs are not yet activated in the app; group genesis, membership authorization and the signed ledger integration remain in progress. Human acceptance is deferred until the complete first-release solution is built.
+
 ## Work order
 
 Work implementation phases in dependency order. On 2026-10-07 the project owner deferred human sign-off until all first-release implementation is complete. Pending human review does not block implementation; automated acceptance and root technical review remain required. Human browser review and the real-group pilot remain mandatory before release.

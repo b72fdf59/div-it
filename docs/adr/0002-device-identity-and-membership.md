@@ -33,12 +33,44 @@ This draft separates confirmed product rules from proposed technical details. Pr
 - Continue signing ledger v1 envelopes over JCS of the full envelope without `signature`, as specified in ADR-0001. Membership records use the same canonicalization and include a `recordType` in signed content. Public keys, participant/device/key IDs, group ID, dependencies, payload, and membership references are all signed.
 - DIV-101 API contract: `canonicalJsonBytes(value)` returns RFC 8785 bytes as UTF-8 and throws on values outside the JSON/I-JSON domain; `signedRecordBytes(record)` returns those bytes after omitting only the top-level `signature` property, without mutating the input. `generateDeviceSigningKeyPair()` returns a non-extractable private key and extractable public key; `exportDevicePublicKey(key)` returns the raw 32-byte public key. `signRecord(record, privateKey)` returns a 64-byte Ed25519 signature encoded as unpadded base64url. `verifyRecord(record, publicKey)` returns false for malformed or invalid signatures; unsupported key types/algorithms and unavailable Web Crypto Ed25519 fail closed with errors. No algorithm fallback is permitted.
 - DIV-102 storage contract (technical draft): `getOrCreateDeviceIdentity()` stores one `{ version, deviceId, keyId, privateKey, publicKey }` record in IndexedDB and returns those values. IDs are stable UUIDs. IndexedDB structured cloning preserves the CryptoKey pair; the private key remains non-extractable and is not exported or copied into group/backup data. Creation generates a candidate before a serialized read-write transaction, rechecks the fixed identity slot, and uses `add` only when it is still empty. Concurrent tabs therefore return the stored winner without replacing it. Existing records are validated, including a sign/verify pair check; malformed records fail with `identity-record-corrupt` and are never silently replaced. Missing IndexedDB fails with `identity-storage-unavailable`.
+- DIV-103 genesis schema/API contract (technical draft): `createGroupGenesis({ name, currency, ownerName })` uses the persisted device identity and returns `{ record, trustPin }`; `verifyGroupGenesis(record, trustPin)` requires an explicit pin and returns `{ ok, reason?, genesisId?, groupId?, publicKeyFingerprint? }`. `group-created` has exactly the fields shown below, including exact nested `author`, `payload`, and `payload.owner` fields; unknown fields are rejected. UUIDs are canonical lowercase repository UUIDs. `createdAt` is UTC with exactly millisecond precision (`YYYY-MM-DDTHH:mm:ss.sssZ`). Group and owner names are trimmed, non-empty, and at most 128 Unicode code points; currencies are one of `USD`, `INR`, `EUR`, or `GBP`; the complete JSON record is at most 8192 UTF-8 bytes. It has empty `membershipHeads`, `causalHeads`, and `dependsOn`, `membershipSchemaVersion: 1`, and `protocolVersion: 2`. The owner participant/device/key IDs in payload must equal the author IDs. The raw Ed25519 public key is exactly 32 bytes encoded as canonical unpadded base64url; the Ed25519 signature is exactly 64 bytes in the same encoding. The fingerprint is SHA-256 over the raw 32 public-key bytes, encoded as `sha256:` followed by canonical unpadded base64url. Trust requires a caller-supplied `{ genesisId, publicKeyFingerprint }` matching both record ID and key; signature validity alone never establishes trust. Verification validates schema, encoding, and size before key import, hashing, or signature verification. Malformed records and pins return stable diagnostic reasons; Web Crypto failures return `genesis-crypto-unavailable`.
 - Non-extractability limits key export through Web Crypto but does not stop injected same-origin script from requesting a signature. Keep this threat in the first-release security documentation. The relay never grants identity or authorization.
 - Use immutable membership records in an ID-keyed set. Automerge transports/stores them but does not decide membership state. Projection uses the complete available record set and classifies missing references as pending, conflicting transitions as pending/conflict, and invalid signatures or unauthorized records as quarantined.
 
 ### Genesis and verification without circular trust
 
-- A `group-created` genesis record is signed by the creator's first device key and contains the group ID, owner participant/device/key IDs, owner public key, initial participant, currency, and genesis membership head. Its `membershipHeads` and `causalHeads` are empty; after local creation or explicit bootstrap trust, its own ID is the initial head in both DAGs. This is the sole self-signed trust anchor. It authorizes only itself and the initial owner/device; it cannot be accepted merely because the signature verifies.
+- A `group-created` genesis record has the exact schema below. Its `id` and `groupId` are independently generated UUIDs. The creator's first persistent device key signs it; `author` and `payload.owner` repeat the same participant/device/key IDs so the owner binding is explicit. Its `membershipHeads`, `causalHeads`, and `dependsOn` are empty; after local creation or an explicit matching trust pin, its own ID is the initial head in both DAGs. This is the sole self-signed trust anchor. It authorizes only itself and the initial owner/device; it cannot be accepted merely because the signature verifies.
+
+```json
+{
+  "id": "11111111-1111-4111-8111-111111111111",
+  "recordType": "group-created",
+  "membershipSchemaVersion": 1,
+  "protocolVersion": 2,
+  "groupId": "22222222-2222-4222-8222-222222222222",
+  "author": {
+    "participantId": "33333333-3333-4333-8333-333333333333",
+    "deviceId": "44444444-4444-4444-8444-444444444444",
+    "keyId": "55555555-5555-4555-8555-555555555555"
+  },
+  "createdAt": "2026-10-07T00:00:00.000Z",
+  "membershipHeads": [],
+  "causalHeads": [],
+  "dependsOn": [],
+  "payload": {
+    "name": "Trip",
+    "currency": "USD",
+    "owner": {
+      "participantId": "33333333-3333-4333-8333-333333333333",
+      "deviceId": "44444444-4444-4444-8444-444444444444",
+      "keyId": "55555555-5555-4555-8555-555555555555",
+      "name": "Alice",
+      "publicKey": "<32-byte Ed25519 public key, unpadded base64url>"
+    }
+  },
+  "signature": "<64-byte Ed25519 signature, unpadded base64url>"
+}
+```
 - A group created locally trusts the exact genesis record it just created. A joining device receives genesis and the membership chain with invite/bootstrap data, then accepts them only after the organizer-signed approval pins the genesis record ID and group ID and the user confirms the group name, ID, and genesis-key fingerprint. A backup for an unknown group uses the same trust-on-first-use comparison. A self-signature or organizer approval alone cannot authenticate an unknown genesis key; a relay cannot replace a previously pinned genesis record.
 - Verification order: (1) parse and size-check raw record; (2) for genesis, verify self-signature, schema, and creator binding then apply the local creation/approved-bootstrap trust rule; for later records, resolve signer key from the membership projection at the named `membershipHeads`; (3) verify signature over canonical bytes; (4) verify transition authorization and references; (5) project. Do not require an enrolled signer to validate the record that enrolls that signer: a join request is verified with its included proposed public key, and the organizer-signed approval enrolls that exact key only after validating the request signature and invite.
 
