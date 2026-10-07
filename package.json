@@ -8,6 +8,7 @@
     "build": "vite build",
     "test": "node --test --test-isolation=none",
     "test:browser": "playwright test",
+    "test:browser:matrix": "playwright test --config=playwright.matrix.config.js",
     "preview": "vite preview"
   },
   "devDependencies": {

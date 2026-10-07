@@ -366,6 +366,7 @@ Status meanings:
 
 - Status: MANUAL
 - Depends on: DIV-035
+- Review packet: [Phase 2 gate browser review](./docs/review/phase-2-gate.md)
 - Deliverable: Run the roadmap's two-tab scenarios in the supported desktop browsers and record results.
 - Acceptance:
   - Human sign-off and observed browser versions are linked here.

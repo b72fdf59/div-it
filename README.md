@@ -25,6 +25,8 @@ Open URL Vite prints. Build release files with `npm run build`.
 
 Run the headless browser smoke test with `npm run test:browser`. It starts a local Vite server automatically and uses Playwright's pinned Firefox runtime.
 
+Run the full browser regression suite on Playwright's Chromium, Firefox, and WebKit engines with `npx playwright install chromium firefox webkit` followed by `npm run test:browser:matrix`. The browser binaries may need host system libraries; see Playwright's install guidance for your OS. These engine runs do not establish compatibility with branded Chrome, Edge, Safari, iOS Safari, or Android Chrome, or cover current and previous stable versions. They do not replace the pending manual two-tab review in [the Phase 2 packet](./docs/review/phase-2-gate.md).
+
 For local development, seed a three-person Seoul trip in browser DevTools after opening the app:
 
 ```js
