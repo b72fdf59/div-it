@@ -422,7 +422,7 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
 
 ### DIV-101 — Canonical signed records and device keys
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-035
 - Deliverable: Implement strict RFC 8785 JSON canonicalization for signing complete records without their signature field; browser Web Crypto Ed25519 generation, signing, and verification with a non-extractable private key. Provide narrow reusable functions, without changing existing unsigned prototype projection or activating identity in the UI.
 - Acceptance:
@@ -431,3 +431,16 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
   - Generated private keys are non-extractable; only public key material is exportable.
   - Unit tests, build, and browser crypto capability checks pass where supported; unavailable runtimes are recorded honestly.
   - Root reviews the implementation before marking DONE and assigning the next identity slice.
+
+### DIV-102 — Persist the local device signing identity
+
+- Status: READY
+- Depends on: DIV-101
+- Deliverable: Persist a browser-generated non-extractable Ed25519 CryptoKey pair and stable device/key IDs in IndexedDB behind a narrow get-or-create device identity API. Keep keys outside group documents and backups; do not activate identity in the existing UI yet.
+- Acceptance:
+  - Reload returns the same key and identifiers, and signatures still verify with its exported public key.
+  - Two tabs initializing concurrently return the same persisted device identity; neither overwrites a winning key.
+  - Separate browser storage contexts have distinct identities.
+  - Private-key export remains prohibited after storage round-trip.
+  - Unavailable crypto/storage and invalid persisted records fail explicitly without silently replacing an existing identity.
+  - Browser tests and existing unit/build checks pass; root review precedes DONE.
