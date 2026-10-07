@@ -1,6 +1,6 @@
 # Phase 2 manual browser review (DIV-036)
 
-**Status: Pending human run and sign-off.** Automated DIV-034 and DIV-035 evidence is linked below; it does not count as manual verification.
+**Status: Pending human run and sign-off; deferred by the owner on 2026-10-07 until first-release implementation is complete. This is a release requirement and does not block implementation.** Automated DIV-034 and DIV-035 evidence is linked below; it does not count as manual verification.
 
 ## Scope and automated evidence
 

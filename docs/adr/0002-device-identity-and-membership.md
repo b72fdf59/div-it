@@ -1,6 +1,6 @@
 # ADR 0002: Device identity and group membership
 
-- Status: Draft — product rules below are confirmed; technical recommendations remain pending root review and ADR approval. Implementation remains gated on the Phase 2 human browser review (DIV-036).
+- Status: Draft — product rules below are confirmed; technical recommendations remain pending root review and ADR approval. Owner deferred human sign-off until first-release implementation is complete on 2026-10-07. Root technical review and automated acceptance are required per implementation slice.
 - Date: 2026-10-07
 - Scope: participant, device, and organizer identity; signed events; invites; authorization; revocation; key lifecycle.
 - Decision owners: Div It maintainers and the first pilot group.
@@ -161,7 +161,7 @@ Recommended stable diagnostics include `invalid-signature`, `unknown-device`, `j
 
 ## Proposed implementation slices (not ready tickets)
 
-1. Root review and ADR approval: confirm v2 envelope/record fields, bounds, conflict fold, bootstrap, and legacy golden-vector encoding. No implementation before this review and DIV-036.
+1. Root review and ADR approval: confirm v2 envelope/record fields, bounds, conflict fold, bootstrap, and legacy golden-vector encoding. Review exact contracts per slice before integration; DIV-036 is deferred to the release review.
 2. Implement pure record parsing, canonical signature adapter, membership DAG projection, conflict diagnostics, and fixed signature/canonicalization/causality vectors.
 3. Implement non-extractable device keys, genesis/bootstrap trust, join requests, organizer approvals, and production fail-closed authorization.
 4. Implement participant/device tombstones, causal frontier production/checkpoint bounds, deterministic removal/adoption behavior, and audit UI.
@@ -170,7 +170,7 @@ Recommended stable diagnostics include `invalid-signature`, `unknown-device`, `j
 7. Implement explicit legacy review and signed migration attestation with golden archive digest vectors.
 8. Integrate removal-triggered key epochs with the separately approved encrypted relay protocol (EPIC-200).
 
-These are architecture slices, not TASKS.md-ready work. The human Phase 2 review remains required before implementation begins.
+These are architecture slices, not TASKS.md-ready work. The human Phase 2 review remains required before release; it no longer blocks implementation.
 
 ## Remaining technical review items
 

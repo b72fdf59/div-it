@@ -4,7 +4,7 @@ This queue turns [ROADMAP.md](./ROADMAP.md) into work units small enough for a f
 
 ## Rules for agents
 
-1. Pick exactly one task whose status is READY. A REVIEW task may be drafted only when a human explicitly assigns it.
+1. Pick exactly one task whose status is READY. The owner authorized first-release implementation on 2026-10-07 with human sign-off deferred until the solution is built; root technical review remains required for architecture slices.
 2. Read that task, its dependencies, the relevant roadmap sections, and the existing code before editing.
 3. Do not make product or architecture decisions missing from the roadmap. Stop and report the decision needed.
 4. Keep the diff limited to the stated deliverable. Preserve unrelated and untracked work.
@@ -20,7 +20,7 @@ Status meanings:
 
 - READY: may be started now.
 - BLOCKED: a named dependency is incomplete.
-- REVIEW: an agent may draft it, but a human must approve it before dependent work starts.
+- REVIEW: requires technical review before dependent implementation; human acceptance is deferred to the built first-release solution by owner instruction.
 - MANUAL: requires human interaction or real devices.
 - FROZEN: intentionally deferred until the first-release gate.
 - DONE: all acceptance checks passed.
@@ -37,7 +37,8 @@ Status meanings:
                                                              DIV-030 ... DIV-036
                                                                       │
                                                                       ▼
-                                                               Phase 2 gate
+                                                        Phase 2 automated checks
+                                                        (human review at release)
 
 ## Phase 1A — establish feedback loops
 
@@ -375,14 +376,14 @@ Status meanings:
 
 ## Later dependency-gated epics
 
-Do not split or implement these until DIV-036 is complete. Reassess the code and divide one epic at a time so future tickets reflect what was actually learned.
+Owner instruction (2026-10-07): defer human sign-off until all first-release implementation is complete. DIV-036 remains MANUAL and is a release requirement, not an implementation dependency. Reassess code and split one epic at a time; root technical review and automated acceptance remain required.
 
 ### EPIC-100 — Device identity and membership
 
-- Status: BLOCKED
-- Depends on: DIV-036
+- Status: READY
+- Depends on: DIV-035; DIV-036 deferred to release
 - Required outcomes: separate participants/devices/organizers; browser-generated signing keys; signed events; ownership transfer and co-organizers; single-use participant invites; QR joining; causal revocation; future-key rotation; documented removal limitations.
-- First action after unblocking: draft and approve the identity/membership ADR, then split implementation by event type and user flow.
+- Execution: ADR-0002 is the working design; root reviews exact technical contracts as each slice is implemented. Final human sign-off is deferred. Begin with DIV-101 below.
 
 ### EPIC-200 — Replaceable encrypted internet relay
 
@@ -416,3 +417,17 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
 - FROZEN: accessibility, locale, and translation hardening beyond release blockers.
 - FROZEN: consent-based reminders.
 - FROZEN: payment links and regional payment-provider research.
+
+## Identity implementation slices
+
+### DIV-101 — Canonical signed records and device keys
+
+- Status: READY
+- Depends on: DIV-035
+- Deliverable: Implement strict RFC 8785 JSON canonicalization for signing complete records without their signature field; browser Web Crypto Ed25519 generation, signing, and verification with a non-extractable private key. Provide narrow reusable functions, without changing existing unsigned prototype projection or activating identity in the UI.
+- Acceptance:
+  - Canonical bytes are independent of object insertion order and preserve array order; invalid JSON values, non-finite numbers, and lone surrogates are rejected.
+  - RFC canonicalization and Ed25519 known-answer vectors pass; changed signed content, wrong keys, malformed signatures, and unsupported algorithms fail closed.
+  - Generated private keys are non-extractable; only public key material is exportable.
+  - Unit tests, build, and browser crypto capability checks pass where supported; unavailable runtimes are recorded honestly.
+  - Root reviews the implementation before marking DONE and assigning the next identity slice.

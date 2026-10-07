@@ -75,7 +75,7 @@ The responsive Activity, Balances, and Group shell, branch review, explicit conf
 
 ## Work order
 
-Work phases in order. A later phase may contain prototype code, but do not expand it while an earlier gate is incomplete.
+Work implementation phases in dependency order. On 2026-10-07 the project owner deferred human sign-off until all first-release implementation is complete. Pending human review does not block implementation; automated acceptance and root technical review remain required. Human browser review and the real-group pilot remain mandatory before release.
 
 Execution-sized tasks, dependencies, and acceptance checks live in [TASKS.md](./TASKS.md).
 
@@ -102,7 +102,7 @@ Gate evidence: [Phase 1 review](./docs/review/phase-1-gate.md) records the deter
 - [x] Make restore merge event sets rather than replace a live document.
 - [x] Test duplicate, reversed, delayed, dependency-missing, malformed, and incompatible events through Automerge replicas; see [DIV-034 delivery evidence](./docs/review/div-034-delivery.md).
 - [x] Automate two-tab offline edits, reconnection, convergence, conflict display, and equal projections; see [DIV-035 two-tab evidence](./docs/review/div-035-two-tab.md).
-- [ ] Manually verify the same scenarios in two tabs before proceeding.
+- [ ] Manually verify the same scenarios in two tabs before release; owner deferred this sign-off until implementation is complete.
 
 Done when two browser tabs can edit offline, reconnect, converge on identical valid event sets and balances, and expose every money conflict for explicit resolution.
 
