@@ -459,7 +459,7 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
 
 ### DIV-104 — Initial signed membership graph and participant roster
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-103
 - Deliverable: Define exact bounded membership schemas and implement a deterministic graph projection for trusted genesis, participant-added, participant-renamed, organizer-granted and organizer-revoked. Verify every signature against the authorized key at its membership heads. Preserve raw records and expose stable effective/pending/conflicting/quarantined/unsupported diagnostics. This slice starts with the genesis device only; additional-device enrollment follows.
 - Acceptance:
@@ -470,3 +470,17 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
   - Unsupported records are retained and reported; unsupported membership changes prevent further authoring, with no silent downgrade.
   - Reordered delivery produces equal roster, roles, heads and diagnostics; inputs remain unmodified.
   - Full unit/build and relevant browser checks pass; root reviews before DONE. Do not activate production identity or claim complete membership until enrollment/revocation and signed-ledger integration land.
+
+### DIV-105 — Signed invitations and device enrollment
+
+- Status: READY
+- Depends on: DIV-104
+- Deliverable: Extend signed membership schemas/projector for invite-issued, invite-revoked, device-join-request, device-enrollment-approved, owner-device-enrollment-consented and owner resolution of conflicting approvals. Add narrow signed command helpers. Organizer privately validates a high-entropy invite token hash before signing approval; no token enters replicated records. UI/QR integration follows after projector review.
+- Acceptance:
+  - A self-signed join request proves the proposed key only and grants no permissions; an active organizer approval binds the exact invite, request, participant, device, key and trusted genesis.
+  - Enrolled device signatures resolve at membershipHeads; ordinary members cannot issue invitations or change membership.
+  - One invite enrolls at most one device. Equivalent approvals are idempotent, differing concurrent approvals enroll neither until owner resolution, and observed consumed invites reject additional enrollment. Different invites combine.
+  - Invite revocation and approval obey the ADR conflict policy; wall-clock expiry is UX only and never changes projection.
+  - Owner-device enrollment requires existing active owner consent; co-organizers cannot recover ownership by approving replacement keys alone.
+  - Raw history, diagnostics and deterministic delivery behavior remain intact; malformed bindings, missing dependencies, key/signature tampering and unknown versions fail closed.
+  - Unit/build and browser checks pass; root reviews before DONE. Participant/device removal and ownership transfer remain separate successor tasks.
