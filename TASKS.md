@@ -515,7 +515,7 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
 
 ### DIV-108 — Bounded causal graph and frontier checks
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-103, DIV-107
 - Deliverable: Add pure bounded graph utilities for explicit signed-record causalHeads and dependsOn edges, with missing/cross-group/cyclic ancestry diagnostics, reachability and maximal-frontier validation. Inputs must be records already verified by the caller; the utilities do not authenticate signatures. Define exact staged lossless checkpoint record construction shape in a separate ADR section for later signer integration.
 - Acceptance:
@@ -527,7 +527,7 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
 
 ### DIV-109 — Authenticated signed ledger projection
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-105, DIV-107
 - Deliverable: Add an isolated async projection API that resolves each v2 ledger record's signer against concrete verified membership at membershipHeads, verifies its original signature, validates participant/group/currency bindings and delegates financial semantics to the existing ledger projector through detached structural views. Preserve raw signed records and diagnostics; do not activate the UI yet.
 - Acceptance:
@@ -536,3 +536,42 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
   - Only verified authorized records affect balances; same-ID distinct authorized v2 variants quarantine even when their detached v1 views match. Raw signatures and heads remain auditable.
   - All existing financial event types preserve money, conflicts, dependencies and zero-sum behavior; reordered delivery converges.
   - Unit/build and focused browser checks pass; root review before DONE. Causal revocation and app activation remain required successors before this API is used in production.
+
+### DIV-110 — Authenticate membership compatibility barriers
+
+- Status: DONE
+- Depends on: DIV-105, DIV-106
+- Deliverable: Make combined membership projection authenticate unknown record types and unsupported versions against verified signer state before allowing them to impose a read-only compatibility barrier. Preserve untrusted input for audit without giving forged or cross-group records control of authoring.
+- Acceptance:
+  - Unsigned, forged, unknown-device, cross-group and structurally malformed unknown membership records never force a healthy group read-only.
+  - A structurally valid unsupported record from a verified enrolled signer at verified heads is retained as unsupported and makes affected authoring read-only.
+  - Unsupported records grant no roles, enrollment or ancestry permissions; missing signer/head proof remains pending.
+  - Existing ownership, invitation and collision semantics remain intact; stable diagnostics and permutation coverage.
+  - Full unit/build checks pass; root reviews before DONE.
+
+### DIV-111 — Membership removal and permanent tombstones
+
+- Status: READY
+- Depends on: DIV-106, DIV-108, DIV-110
+- Deliverable: Add organizer-signed device-revoked and participant-removed records, commands, permanent tombstones and removal diagnostics to the verified membership graph. Preserve historical state at earlier membership heads for signature verification; expose complete-set tombstones separately for causal ledger cutoffs in the successor task.
+- Acceptance:
+  - Only an active organizer at the declared verified heads removes participants/devices; ordinary members cannot.
+  - Device removal affects one device; participant removal covers all of that participant's devices, including concurrent enrollment. Removed identities cannot be re-enrolled by an old invite or new delivery.
+  - Removal payloads and signed observed causal frontier have exact bounded schemas; no timestamp ordering or implicit frontier truncation.
+  - Current-device authority is denied after removal; historical keys and records remain auditable. A removed ownership-transfer recipient cannot become owner.
+  - Loss of all current-owner keys never enables co-organizer takeover; owner-only administration remains unavailable.
+  - Future encryption epoch advancement is represented without claiming secret rotation or downloaded-history erasure; relay key distribution follows EPIC-200.
+  - Reordered removals/enrollments converge; unit/build and focused browser checks pass. Root reviews before DONE. Full causal ledger revocation and app activation are separate successors.
+
+### DIV-112 — Legacy activation review summary and archive digest
+
+- Status: READY
+- Depends on: DIV-101, DIV-103
+- Deliverable: Prepare a detached owner-review summary of legacy prototype group participants, currency and exact projected opening balances, plus RFC 8785/SHA-256 canonical archive digest and explicitly unverified authorship. Preserve source IDs and raw data; produce no membership or ledger writes and no automatic activation.
+- Acceptance:
+  - Existing legacy and event-array/scalar-store fixtures retain exact integer values, IDs and raw event content; input is never mutated.
+  - Zero-sum opening balances come from the existing deterministic projector; malformed/unsupported source cannot silently be adopted.
+  - Fixed digest vectors cover empty group, Unicode names, money and reordered object keys; changed values change digest, reordered keys do not.
+  - Summary clearly marks legacy authorship unverified; placeholder signatures never become trusted.
+  - Preserve original archive bytes when supplied; otherwise expose canonical object archive explicitly without inventing original serialization.
+  - Unit/build checks pass; root review before DONE. Participant ID mapping, signed migration attestation and UI activation follow separately.

@@ -129,8 +129,15 @@ test("forged parent and revoked organizer head cannot authorize an invite", asyn
     ...Array.from({ length: 300 }, () => structuredClone(alternateMember))], { trustPin: ctx.trustPin });
   assert.equal(duplicateCollision.groupId, ctx.genesis.groupId);
   assert.equal(duplicateCollision.diagnostics.some((item) => item.reason === "membership-record-limit"), false);
-  const future = { id: uuid(), groupId: ctx.genesis.groupId, recordType: "future-membership", membershipSchemaVersion: 1, protocolVersion: 2 };
+  const future = { id: uuid(), groupId: ctx.genesis.groupId, recordType: "future-membership", membershipSchemaVersion: 1, protocolVersion: 2,
+    author: { participantId: ctx.owner.participantId, deviceId: ctx.owner.deviceId, keyId: ctx.owner.keyId },
+    createdAt: "2026-10-07T00:00:02.000Z", membershipHeads: [ctx.records[1].id], causalHeads: [], dependsOn: [], payload: { future: true } };
+  future.signature = await signRecord(future, ctx.owner.privateKey);
   ctx.records.push(future);
+  const futureProjection = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin });
+  assert.equal(futureProjection.readOnly, true);
+  assert.ok(futureProjection.diagnostics.some((item) => item.recordId === future.id
+    && item.status === "unsupported" && item.reason === "unsupported-membership-record"));
   await assert.rejects(issueInvite(ctx, ctx.owner, ctx.member.participantId, [ctx.records[1].id]), /not-organizer/);
   ctx.records.pop();
   ctx.records = [ctx.genesis, ctx.records[1]];

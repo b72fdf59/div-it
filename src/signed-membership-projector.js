@@ -87,6 +87,26 @@ function schemaError(record) {
   } catch { return "invalid-enrollment-schema"; }
 }
 
+function compatibilityEnvelopeError(record) {
+  try {
+    if (!exact(record, FIELDS) || typeof record.recordType !== "string" || !record.recordType.length || record.recordType.length > 64
+        || !uuid(record.id) || !uuid(record.groupId)
+        || !exact(record.author, AUTHOR) || !AUTHOR.every((field) => uuid(record.author[field]))
+        || !timestamp(record.createdAt) || !Array.isArray(record.membershipHeads) || !record.membershipHeads.length
+        || record.membershipHeads.length > 64 || !record.membershipHeads.every((id, i) => uuid(id) && (!i || record.membershipHeads[i - 1] < id))
+        || !Array.isArray(record.causalHeads) || record.causalHeads.length > 64
+        || !record.causalHeads.every((id, i) => uuid(id) && (!i || record.causalHeads[i - 1] < id))
+        || !Array.isArray(record.dependsOn) || record.dependsOn.length > 256
+        || !record.dependsOn.every((id, i) => uuid(id) && (!i || record.dependsOn[i - 1] < id))
+        || !record.payload || typeof record.payload !== "object" || Array.isArray(record.payload)
+        || typeof record.signature !== "string" || !SIG.test(record.signature)
+        || !Number.isSafeInteger(record.membershipSchemaVersion) || record.membershipSchemaVersion < 1
+        || !Number.isSafeInteger(record.protocolVersion) || record.protocolVersion < 1
+        || canonicalJsonBytes(record).byteLength > 8192) return "invalid-membership-schema";
+    return null;
+  } catch { return "invalid-membership-schema"; }
+}
+
 function relation(record, ancestorId, byId, visiting = new Set()) {
   if (record.id === ancestorId || record.membershipHeads.includes(ancestorId)) return true;
   if (visiting.has(record.id)) return false;
@@ -130,6 +150,7 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
   const diagnostics = [];
   const variants = new Map();
   const variantKeys = new Map();
+  const compatibilityCandidates = new Map();
   const collisions = new Set();
   const duplicateCounts = new Map();
   let uniqueVariantCount = 0;
@@ -137,12 +158,6 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
   for (const record of rawRecords) {
     let type;
     try { type = record?.recordType; } catch { diagnostics.push(diag("quarantined", "invalid-membership-schema", record)); continue; }
-    if (!BASE.has(type) && !TYPES.has(type)) {
-      if (record?.membershipSchemaVersion === 1 && record?.protocolVersion === 2) {
-        readOnly = true; diagnostics.push(diag("unsupported", "unsupported-membership-record", record));
-      }
-      continue;
-    }
     let id;
     try { id = record.id; } catch { diagnostics.push(diag("quarantined", "invalid-membership-id", record)); continue; }
     if (!uuid(id)) { diagnostics.push(diag("quarantined", "invalid-membership-id", record)); continue; }
@@ -155,7 +170,12 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
     keys.add(key); variantKeys.set(id, keys); uniqueVariantCount += 1;
     if (keys.size > 1) {
       collisions.add(id); diagnostics.push(diag("quarantined", "id-content-collision", record, { recordId: id }));
-    } else variants.set(id, { key, record });
+    } else if (!BASE.has(type) && !TYPES.has(type)) compatibilityCandidates.set(id, record);
+    else {
+      variants.set(id, { key, record });
+      if (BASE.has(type) && id !== trustPin?.genesisId
+          && (record.membershipSchemaVersion !== 1 || record.protocolVersion !== 2)) compatibilityCandidates.set(id, record);
+    }
     if (uniqueVariantCount > MAX) return empty(rawRecords, diagnostics.concat({ status: "quarantined", reason: "membership-record-limit" }), true);
   }
   for (const [recordId, duplicateCount] of duplicateCounts) diagnostics.push({ recordId, status: "duplicate", reason: "duplicate-membership-record", duplicateCount });
@@ -176,7 +196,7 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
     const error = schemaError(record);
     if (error) {
       errors.set(id, error);
-      if (error === "unsupported-membership-version") readOnly = true;
+      if (error === "unsupported-membership-version") compatibilityCandidates.set(id, record);
       continue;
     }
   }
@@ -291,7 +311,7 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
   }
 
   async function verifyBase(record) {
-    if (acceptedBase.has(record.id) || baseErrors.has(record.id)) return false;
+    if (acceptedBase.has(record.id) || baseErrors.has(record.id) || compatibilityCandidates.has(record.id)) return false;
     const schema = validateMembershipRecord(record);
     if (schema) { baseErrors.set(record.id, schema); return false; }
     let closure;
@@ -523,6 +543,57 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
     }
   }
 
+  for (const [id, record] of [...compatibilityCandidates].sort(([a], [b]) => a.localeCompare(b))) {
+    if (collisions.has(id)) continue;
+    const envelopeError = compatibilityEnvelopeError(record);
+    if (envelopeError) {
+      diagnostics.push(diag("quarantined", envelopeError, record));
+      continue;
+    }
+    if (record.groupId !== groupId) {
+      diagnostics.push(diag("quarantined", "cross-group-record", record));
+      continue;
+    }
+    let closure;
+    try { closure = closureFromHeads(record.membershipHeads, byId, groupId, genesisId); }
+    catch (error) {
+      const status = error.message === "missing-membership-head" ? "pending" : "quarantined";
+      diagnostics.push(diag(status, error.message, record));
+      continue;
+    }
+    if (record.membershipHeads.some((head) => !effective.has(head))) {
+      diagnostics.push(diag("pending", "membership-head-not-effective", record));
+      continue;
+    }
+    const state = await baseAt(record.membershipHeads);
+    if (state.error) {
+      const status = state.error === "invalid-membership-ancestor" ? "pending" : "quarantined";
+      diagnostics.push(diag(status, state.error, record));
+      continue;
+    }
+    const signer = matchingEnrollment(record.author, closure);
+    if (!signer) {
+      diagnostics.push(diag("pending", "unknown-device-at-membership-heads", record));
+      continue;
+    }
+    const publicKeyBytes = unb64(signer.key);
+    let signatureValid = false;
+    try {
+      if (publicKeyBytes) {
+        const publicKey = await crypto.subtle.importKey("raw", publicKeyBytes, { name: "Ed25519" }, false, ["verify"]);
+        signatureValid = await verifyRecord(record, publicKey);
+      }
+    } catch { /* malformed or unsupported signatures remain quarantined */ }
+    if (!signatureValid) {
+      diagnostics.push(diag("quarantined", "invalid-membership-signature", record));
+      continue;
+    }
+    readOnly = true;
+    const unsupportedReason = record.membershipSchemaVersion !== 1 || record.protocolVersion !== 2
+      ? "unsupported-membership-version" : "unsupported-membership-record";
+    diagnostics.push(diag("unsupported", unsupportedReason, record));
+  }
+
   // Final per-record diagnostics and projection values come from the verified ancestry closure.
   const allEffectiveHeads = [...effective].filter((id) => ![...effective].some((other) => other !== id && relation(byId.get(other), id, byId))).sort();
   const requestedHeads = atHeads || allEffectiveHeads;
@@ -570,8 +641,13 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
       deviceMap.delete(device.deviceId); devices.splice(devices.indexOf(prior), 1); diagnostics.push({ status: "conflicting", reason: "device-id-collision", deviceId: device.deviceId });
     }
   }
-  for (const [id, error] of errors) diagnostics.push(diag(error === "unsupported-membership-version" ? "unsupported" : "quarantined", error, byId.get(id)));
-  for (const [id, error] of baseErrors) diagnostics.push(diag("quarantined", error, byId.get(id)));
+  for (const [id, error] of errors) {
+    if (compatibilityCandidates.has(id)) continue;
+    diagnostics.push(diag(error === "unsupported-membership-version" ? "unsupported" : "quarantined", error, byId.get(id)));
+  }
+  for (const [id, error] of baseErrors) {
+    if (!compatibilityCandidates.has(id)) diagnostics.push(diag("quarantined", error, byId.get(id)));
+  }
   for (const record of transitions) {
     if (errors.has(record.id) || valid.has(record.id)) continue;
     const status = pendingRecords.has(record.id) ? "pending" : "pending";
