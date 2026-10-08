@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { exportDevicePublicKey, generateDeviceSigningKeyPair, signRecord } from "./src/identity-crypto.js";
-import { approveJoinRequestCommand, createInviteCommand, createJoinRequestCommand, createInviteRevocationCommand, createInviteConflictResolutionCommand, createOwnerDeviceConsentCommand, projectMembershipEnrollment } from "./src/membership-invitations.js";
+import { approveJoinRequestCommand, createInviteCommand, createJoinRequestCommand, createInviteRevocationCommand, createInviteConflictResolutionCommand, createOwnerDeviceConsentCommand, createOwnershipTransferProposalCommand, createOwnershipTransferAcceptanceCommand, createOwnershipTransferResolutionCommand, projectMembershipEnrollment } from "./src/membership-invitations.js";
 
 function encode(bytes) { let out = ""; for (const byte of bytes) out += String.fromCharCode(byte); return btoa(out).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_"); }
 const uuid = () => crypto.randomUUID();
@@ -267,4 +267,178 @@ test("conflicting public keys for one device ID cannot authorize descendants", a
   assert.equal(projection.devices.some((item) => item.deviceId === deviceId), false);
   assert.equal(projection.invites.some((item) => item.recordId === childInvite.record.id), false);
   assert.ok(projection.diagnostics.some((item) => item.reason === "device-id-collision"));
+});
+
+test("accepted ownership follows the recipient key and prior owner remains an organizer until revoked", async () => {
+  const ctx = await setup();
+  const invite = await issueInvite(ctx, ctx.owner, ctx.member.participantId);
+  const request = await requestJoin(ctx, invite, { ...ctx.member, ...ctx.member.pair });
+  const approval = await approve(ctx, invite, request, ctx.owner);
+  const grant = await rosterRecord({ groupId: ctx.genesis.groupId, author: ctx.owner, privateKey: ctx.owner.privateKey,
+    head: approval.id, recordType: "organizer-granted", payload: { participantId: ctx.member.participantId } });
+  ctx.records.push(grant);
+  const memberIdentity = { ...ctx.member, ...ctx.member.pair };
+  const proposal = await createOwnershipTransferProposalCommand({ groupId: ctx.genesis.groupId,
+    recipientParticipantId: ctx.member.participantId, recipientDeviceId: ctx.member.deviceId, recipientKeyId: ctx.member.keyId,
+    membershipHeads: [grant.id], identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(proposal);
+  assert.equal((await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin, atHeads: [proposal.id] })).ownerParticipantId, ctx.owner.participantId);
+  const wrongKey = { ...memberIdentity, ...await generateDeviceSigningKeyPair() };
+  await assert.rejects(createOwnershipTransferAcceptanceCommand({ proposal, groupId: ctx.genesis.groupId, membershipHeads: [proposal.id],
+    identity: wrongKey, records: ctx.records, trustPin: ctx.trustPin }), /transfer-recipient-key-mismatch/);
+  const accepted = await createOwnershipTransferAcceptanceCommand({ proposal, groupId: ctx.genesis.groupId,
+    membershipHeads: [proposal.id], identity: memberIdentity, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(accepted);
+  const afterTransfer = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin, atHeads: [accepted.id] });
+  assert.equal(afterTransfer.ownerParticipantId, ctx.member.participantId);
+  assert.equal(afterTransfer.organizers.includes(ctx.owner.participantId), true);
+  const newOwnerInvite = await issueInvite(ctx, memberIdentity, ctx.member.participantId, [accepted.id]);
+  assert.equal(newOwnerInvite.record.author.participantId, ctx.member.participantId);
+  const priorOwnerInvite = await issueInvite(ctx, ctx.owner, ctx.member.participantId, [accepted.id]);
+  assert.equal(priorOwnerInvite.record.author.participantId, ctx.owner.participantId);
+  await assert.rejects(createOwnershipTransferProposalCommand({ groupId: ctx.genesis.groupId,
+    recipientParticipantId: ctx.member.participantId, recipientDeviceId: ctx.member.deviceId, recipientKeyId: ctx.member.keyId,
+    membershipHeads: [accepted.id], identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin }), /not-owner/);
+  const secondOwnerDevice = { participantId: ctx.member.participantId, deviceId: uuid(), keyId: uuid(), ...await generateDeviceSigningKeyPair() };
+  const ownDeviceInvite = await issueInvite(ctx, memberIdentity, ctx.member.participantId, [accepted.id]);
+  const ownDeviceRequest = await requestJoin(ctx, ownDeviceInvite, secondOwnerDevice);
+  const ownDeviceApproval = await approve(ctx, ownDeviceInvite, ownDeviceRequest, ctx.owner);
+  const ownDeviceConsent = await createOwnerDeviceConsentCommand({ approval: ownDeviceApproval, groupId: ctx.genesis.groupId,
+    membershipHeads: [ownDeviceApproval.id], identity: memberIdentity, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(ownDeviceConsent);
+  assert.equal((await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin, atHeads: [ownDeviceConsent.id] }))
+    .devices.some((device) => device.deviceId === secondOwnerDevice.deviceId), true);
+  const revokeOldOwner = await rosterRecord({ groupId: ctx.genesis.groupId, author: memberIdentity, privateKey: memberIdentity.privateKey,
+    head: ownDeviceConsent.id, recordType: "organizer-revoked", payload: { participantId: ctx.owner.participantId } });
+  ctx.records.push(revokeOldOwner);
+  const afterRevoke = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin, atHeads: [revokeOldOwner.id] });
+  assert.equal(afterRevoke.organizers.includes(ctx.owner.participantId), false);
+  const nextProposal = await createOwnershipTransferProposalCommand({ groupId: ctx.genesis.groupId,
+    recipientParticipantId: ctx.owner.participantId, recipientDeviceId: ctx.owner.deviceId, recipientKeyId: ctx.owner.keyId,
+    membershipHeads: [revokeOldOwner.id], identity: secondOwnerDevice, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(nextProposal);
+  const nextAcceptance = await createOwnershipTransferAcceptanceCommand({ proposal: nextProposal, groupId: ctx.genesis.groupId,
+    membershipHeads: [nextProposal.id], identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(nextAcceptance);
+  const restored = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin, atHeads: [nextAcceptance.id] });
+  assert.equal(restored.ownerParticipantId, ctx.owner.participantId);
+});
+
+test("concurrent accepted transfers retain prior owner until one complete nonconflicting resolution", async () => {
+  const ctx = await setup();
+  const otherId = uuid();
+  const otherAdd = await rosterRecord({ groupId: ctx.genesis.groupId, author: ctx.owner, privateKey: ctx.owner.privateKey,
+    head: ctx.records[1].id, recordType: "participant-added", payload: { participantId: otherId, name: "Other" } });
+  ctx.records.push(otherAdd);
+  const memberInvite = await issueInvite(ctx, ctx.owner, ctx.member.participantId, [otherAdd.id]);
+  const memberRequest = await requestJoin(ctx, memberInvite, { ...ctx.member, ...ctx.member.pair });
+  const memberApproval = await approve(ctx, memberInvite, memberRequest, ctx.owner);
+  const otherInvite = await issueInvite(ctx, ctx.owner, otherId, [otherAdd.id]);
+  const otherIdentity = { participantId: otherId, deviceId: uuid(), keyId: uuid(), ...await generateDeviceSigningKeyPair() };
+  const otherRequest = await requestJoin(ctx, otherInvite, otherIdentity);
+  const otherApproval = await approve(ctx, otherInvite, otherRequest, ctx.owner);
+  const heads = [memberApproval.id, otherApproval.id].sort();
+  const proposalA = await createOwnershipTransferProposalCommand({ groupId: ctx.genesis.groupId,
+    recipientParticipantId: ctx.member.participantId, recipientDeviceId: ctx.member.deviceId, recipientKeyId: ctx.member.keyId,
+    membershipHeads: heads, identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(proposalA);
+  const proposalB = await createOwnershipTransferProposalCommand({ groupId: ctx.genesis.groupId,
+    recipientParticipantId: otherId, recipientDeviceId: otherIdentity.deviceId, recipientKeyId: otherIdentity.keyId,
+    membershipHeads: heads, identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(proposalB);
+  const acceptanceA = await createOwnershipTransferAcceptanceCommand({ proposal: proposalA, groupId: ctx.genesis.groupId,
+    membershipHeads: [proposalA.id], identity: { ...ctx.member, ...ctx.member.pair }, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(acceptanceA);
+  const branchGrant = await rosterRecord({ groupId: ctx.genesis.groupId, author: { ...ctx.member, ...ctx.member.pair },
+    privateKey: ctx.member.pair.privateKey, head: acceptanceA.id, recordType: "organizer-granted", payload: { participantId: otherId } });
+  ctx.records.push(branchGrant);
+  const acceptanceB = await createOwnershipTransferAcceptanceCommand({ proposal: proposalB, groupId: ctx.genesis.groupId,
+    membershipHeads: [proposalB.id], identity: otherIdentity, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(acceptanceB);
+  const conflictHeads = [acceptanceA.id, acceptanceB.id].sort();
+  let projection = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin });
+  assert.equal(projection.ownerParticipantId, ctx.owner.participantId);
+  assert.deepEqual(projection.transferConflictRecordIds, conflictHeads);
+  assert.equal(projection.organizers.includes(otherId), false);
+  const resolutionA = await createOwnershipTransferResolutionCommand({ conflictRecordIds: conflictHeads,
+    selectedRecordId: acceptanceA.id, groupId: ctx.genesis.groupId, membershipHeads: conflictHeads, identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(resolutionA);
+  const resolutionB = await createOwnershipTransferResolutionCommand({ conflictRecordIds: conflictHeads,
+    selectedRecordId: acceptanceB.id, groupId: ctx.genesis.groupId, membershipHeads: conflictHeads, identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(resolutionB);
+  projection = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin });
+  assert.equal(projection.ownerParticipantId, ctx.owner.participantId);
+  assert.deepEqual(projection.transferConflictRecordIds, conflictHeads);
+  const finalResolution = await createOwnershipTransferResolutionCommand({ conflictRecordIds: conflictHeads,
+    selectedRecordId: acceptanceA.id, groupId: ctx.genesis.groupId, membershipHeads: [resolutionA.id, resolutionB.id].sort(),
+    identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(finalResolution);
+  projection = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin });
+  assert.equal(projection.ownerParticipantId, ctx.member.participantId);
+  assert.deepEqual(projection.transferConflictRecordIds, []);
+  assert.equal(projection.organizers.includes(otherId), true);
+});
+
+test("multi-generation transfer forks retain common owner independent of record order", async () => {
+  const ctx = await setup();
+  const participantC = uuid();
+  const addC = await rosterRecord({ groupId: ctx.genesis.groupId, author: ctx.owner, privateKey: ctx.owner.privateKey,
+    head: ctx.records.at(-1).id, recordType: "participant-added", payload: { participantId: participantC, name: "C" } });
+  ctx.records.push(addC);
+  const participantD = uuid();
+  const addD = await rosterRecord({ groupId: ctx.genesis.groupId, author: ctx.owner, privateKey: ctx.owner.privateKey,
+    head: addC.id, recordType: "participant-added", payload: { participantId: participantD, name: "D" } });
+  ctx.records.push(addD);
+  const enroll = async (participantId, name) => {
+    const invite = await issueInvite(ctx, ctx.owner, participantId, [addD.id]);
+    const identity = { participantId, deviceId: uuid(), keyId: uuid(), ...await generateDeviceSigningKeyPair() };
+    const request = await requestJoin(ctx, invite, identity);
+    const approval = await approve(ctx, invite, request, ctx.owner);
+    return { identity, approval };
+  };
+  const b = { identity: { ...ctx.member, ...ctx.member.pair }, approval: null };
+  const inviteB = await issueInvite(ctx, ctx.owner, ctx.member.participantId, [addD.id]);
+  const requestB = await requestJoin(ctx, inviteB, b.identity);
+  b.approval = await approve(ctx, inviteB, requestB, ctx.owner);
+  const c = await enroll(participantC, "C");
+  const d = await enroll(participantD, "D");
+  const commonHeads = [b.approval.id, c.approval.id, d.approval.id].sort();
+  const proposalB = await createOwnershipTransferProposalCommand({ groupId: ctx.genesis.groupId,
+    recipientParticipantId: ctx.member.participantId, recipientDeviceId: b.identity.deviceId, recipientKeyId: b.identity.keyId,
+    membershipHeads: commonHeads, identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(proposalB);
+  const proposalC = await createOwnershipTransferProposalCommand({ groupId: ctx.genesis.groupId,
+    recipientParticipantId: participantC, recipientDeviceId: c.identity.deviceId, recipientKeyId: c.identity.keyId,
+    membershipHeads: commonHeads, identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(proposalC);
+  const acceptB = await createOwnershipTransferAcceptanceCommand({ proposal: proposalB, groupId: ctx.genesis.groupId,
+    membershipHeads: [proposalB.id], identity: b.identity, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(acceptB);
+  const grant = await rosterRecord({ groupId: ctx.genesis.groupId, author: b.identity, privateKey: b.identity.privateKey,
+    head: acceptB.id, recordType: "organizer-granted", payload: { participantId: participantC } });
+  ctx.records.push(grant);
+  const proposalD = await createOwnershipTransferProposalCommand({ groupId: ctx.genesis.groupId,
+    recipientParticipantId: participantD, recipientDeviceId: d.identity.deviceId, recipientKeyId: d.identity.keyId,
+    membershipHeads: [grant.id], identity: b.identity, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(proposalD);
+  const acceptD = await createOwnershipTransferAcceptanceCommand({ proposal: proposalD, groupId: ctx.genesis.groupId,
+    membershipHeads: [proposalD.id], identity: d.identity, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(acceptD);
+  const acceptC = await createOwnershipTransferAcceptanceCommand({ proposal: proposalC, groupId: ctx.genesis.groupId,
+    membershipHeads: [proposalC.id], identity: c.identity, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(acceptC);
+  for (const records of [ctx.records, [...ctx.records].reverse()]) {
+    const projection = await projectMembershipEnrollment(records, { trustPin: ctx.trustPin });
+    assert.equal(projection.ownerParticipantId, ctx.owner.participantId);
+    assert.equal(projection.organizers.includes(participantC), false);
+    assert.deepEqual(projection.transferConflictRecordIds, [acceptB.id, acceptC.id].sort());
+  }
+  const resolution = await createOwnershipTransferResolutionCommand({ conflictRecordIds: [acceptB.id, acceptC.id].sort(),
+    selectedRecordId: acceptB.id, groupId: ctx.genesis.groupId, membershipHeads: [acceptB.id, acceptC.id].sort(),
+    identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(resolution);
+  const resolved = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin });
+  assert.equal(resolved.ownerParticipantId, participantD);
+  assert.equal(resolved.organizers.includes(participantC), true);
+  assert.deepEqual(resolved.transferConflictRecordIds, []);
 });

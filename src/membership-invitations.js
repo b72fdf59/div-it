@@ -223,6 +223,52 @@ export async function createInviteConflictResolutionCommand({ inviteId, conflict
   return record;
 }
 
+export async function createOwnershipTransferProposalCommand({ groupId, recipientParticipantId, recipientDeviceId, recipientKeyId, membershipHeads, identity, records, trustPin }) {
+  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "owner" });
+  if (!authority || groupId !== authority.projection.groupId) throw new Error("not-owner");
+  const recipient = authority.projection.devices.find((device) => device.participantId === recipientParticipantId
+    && device.deviceId === recipientDeviceId && device.keyId === recipientKeyId);
+  if (!recipient || recipientParticipantId === authority.projection.ownerParticipantId) throw new Error("transfer-recipient-not-active");
+  const record = makeEnvelope("ownership-transfer-proposed", groupId, identity, membershipHeads, {
+    transferId: crypto.randomUUID(), ownerParticipantId: authority.projection.ownerParticipantId,
+    recipientParticipantId, recipientDeviceId, recipientKeyId
+  });
+  record.signature = await signRecord(record, identity.privateKey);
+  return record;
+}
+
+export async function createOwnershipTransferAcceptanceCommand({ proposal, groupId, membershipHeads, identity, records, trustPin }) {
+  const projection = await projectSignedMembership(records, { trustPin, atHeads: membershipHeads });
+  if (projection.readOnly || projection.groupId !== groupId || !sameRecord(records, proposal)
+      || !projection.ownershipTransfers.some((item) => item.proposalId === proposal.id && !item.acceptanceId)) {
+    throw new Error("transfer-proposal-not-authenticated-at-heads");
+  }
+  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "member" });
+  if (!authority || proposal.payload.recipientParticipantId !== identity.participantId
+      || proposal.payload.recipientDeviceId !== identity.deviceId || proposal.payload.recipientKeyId !== identity.keyId) {
+    throw new Error("transfer-recipient-key-mismatch");
+  }
+  const record = makeEnvelope("ownership-transfer-accepted", groupId, identity, membershipHeads, {
+    proposalId: proposal.id, transferId: proposal.payload.transferId
+  });
+  record.signature = await signRecord(record, identity.privateKey);
+  return record;
+}
+
+export async function createOwnershipTransferResolutionCommand({ conflictRecordIds, selectedRecordId, groupId, membershipHeads, identity, records, trustPin }) {
+  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "owner" });
+  if (!authority || groupId !== authority.projection.groupId) throw new Error("not-owner");
+  const sorted = [...conflictRecordIds].sort();
+  if (sorted.length !== authority.projection.transferConflictRecordIds.length
+      || sorted.some((id, index) => id !== authority.projection.transferConflictRecordIds[index])
+      || !sorted.includes(selectedRecordId)) throw new Error("incomplete-transfer-conflict-set");
+  const record = makeEnvelope("ownership-transfer-resolved", groupId, identity, membershipHeads, {
+    conflictRecordIds: sorted, selectedRecordId
+  });
+  record.signature = await signRecord(record, identity.privateKey);
+  return record;
+}
+
 function sameRecord(records, supplied) {
   if (!Array.isArray(records) || !supplied || typeof supplied !== "object") return false;
   try {

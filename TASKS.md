@@ -488,7 +488,7 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
 
 ### DIV-106 — Signed ownership transfer
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-105
 - Deliverable: Add ownership-transfer-proposed and ownership-transfer-accepted schemas, signed command helpers and projection to the combined membership graph. Resolve owner authority at each record's verified membership heads rather than hardcoding the genesis owner. Add owner resolution for conflicting accepted transfers.
 - Acceptance:
@@ -499,3 +499,40 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
   - Invalid/unenrolled recipients, mismatched acceptance, forged ancestry, cycles, missing dependencies and same-ID collisions fail closed and remain auditable.
   - No co-organizer takeover or automatic owner recovery is introduced. Device/participant removal follows separately; its integration must invalidate removed transfer recipients.
   - Full unit/build and focused browser checks pass; root reviews before DONE. No production UI activation yet.
+
+### DIV-107 — Signed ledger envelope and record builders
+
+- Status: DONE
+- Depends on: DIV-101, DIV-103
+- Deliverable: Add an isolated v2 signed ledger envelope parser and record builders for existing v1 financial payload types. Reuse parseEvent payload validation through a detached internal v1 structural view, preserving the original signed v2 record. Add membershipHeads and causalHeads fields with canonical UUID/frontier bounds. This is record construction and structural validation, not complete ledger authorization or app activation.
+- Acceptance:
+  - All existing financial event types retain their exact integer-money and dependency semantics.
+  - V2 envelopes require schemaVersion 1, protocolVersion 2, author IDs, group ID, signature, and sorted unique membership/causal frontiers, capped at 64 entries each; membershipHeads is non-empty.
+  - Builders validate before signing; canonical signature covers original v2 fields and payload, never a transformed v1 view.
+  - Malformed money, IDs, attribution, extra fields, frontiers and unsupported versions produce stable diagnostics.
+  - Inputs and existing v1 prototype parsing/projection remain unchanged; no UI or ledger projector activation.
+  - Unit/build checks pass; root reviews before DONE. Membership authorization, causal ancestry and revocation integration are successor work.
+
+### DIV-108 — Bounded causal graph and frontier checks
+
+- Status: READY
+- Depends on: DIV-103, DIV-107
+- Deliverable: Add pure bounded graph utilities for explicit signed-record causalHeads and dependsOn edges, with missing/cross-group/cyclic ancestry diagnostics, reachability and maximal-frontier validation. Inputs must be records already verified by the caller; the utilities do not authenticate signatures. Define exact staged lossless checkpoint record construction shape in a separate ADR section for later signer integration.
+- Acceptance:
+  - Reachability uses signed explicit edges and never timestamps, array position or membershipHeads as event-causal edges.
+  - Missing ancestry is pending; cycles, collisions and cross-group ancestry fail closed with stable diagnostics.
+  - Sorted unique frontiers are bounded to 64; redundant ancestor heads are rejected. More than 64 heads reduce through staged checkpoint plans with at most 64 inputs each, preserving every original head without resolving conflicts.
+  - Reordered records give identical reachability/diagnostics; bounded input and no mutation.
+  - Unit/build checks pass; root review before DONE. Signed checkpoint authorization and removal integration follow separately.
+
+### DIV-109 — Authenticated signed ledger projection
+
+- Status: READY
+- Depends on: DIV-105, DIV-107
+- Deliverable: Add an isolated async projection API that resolves each v2 ledger record's signer against concrete verified membership at membershipHeads, verifies its original signature, validates participant/group/currency bindings and delegates financial semantics to the existing ledger projector through detached structural views. Preserve raw signed records and diagnostics; do not activate the UI yet.
+- Acceptance:
+  - Actual enrolled ordinary members can write ledger events; unknown devices, proof-only requests, mismatched attribution, wrong keys, altered frontiers and untrusted groups cannot.
+  - Missing membership ancestry is pending, unsupported membership makes authoring read-only, and caller callbacks cannot fabricate authorization.
+  - Only verified authorized records affect balances; same-ID distinct authorized v2 variants quarantine even when their detached v1 views match. Raw signatures and heads remain auditable.
+  - All existing financial event types preserve money, conflicts, dependencies and zero-sum behavior; reordered delivery converges.
+  - Unit/build and focused browser checks pass; root review before DONE. Causal revocation and app activation remain required successors before this API is used in production.
