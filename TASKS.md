@@ -473,7 +473,8 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
 
 ### DIV-105 — Signed invitations and device enrollment
 
-- Status: READY
+- Status: DONE
+- Review: [accepted technical review](./docs/review/div-105-enrollment.md); app/QR integration remains a successor task.
 - Depends on: DIV-104
 - Deliverable: Extend signed membership schemas/projector for invite-issued, invite-revoked, device-join-request, device-enrollment-approved, owner-device-enrollment-consented and owner resolution of conflicting approvals. Add narrow signed command helpers. Organizer privately validates a high-entropy invite token hash before signing approval; no token enters replicated records. UI/QR integration follows after projector review.
 - Acceptance:
@@ -484,3 +485,17 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
   - Owner-device enrollment requires existing active owner consent; co-organizers cannot recover ownership by approving replacement keys alone.
   - Raw history, diagnostics and deterministic delivery behavior remain intact; malformed bindings, missing dependencies, key/signature tampering and unknown versions fail closed.
   - Unit/build and browser checks pass; root reviews before DONE. Participant/device removal and ownership transfer remain separate successor tasks.
+
+### DIV-106 — Signed ownership transfer
+
+- Status: READY
+- Depends on: DIV-105
+- Deliverable: Add ownership-transfer-proposed and ownership-transfer-accepted schemas, signed command helpers and projection to the combined membership graph. Resolve owner authority at each record's verified membership heads rather than hardcoding the genesis owner. Add owner resolution for conflicting accepted transfers.
+- Acceptance:
+  - Only the current owner proposes transfer; the exact named active enrolled recipient device accepts with its own key. A proposal alone changes no owner.
+  - Accepted uncontested transfers install one owner; ownership authority follows the verified transfer chain for role grants, invitations, consent and further transfer.
+  - Prior owner retains organizer status until explicitly revoked by the new owner; new owner has organizer authority. Only current owner is protected from organizer revocation.
+  - Concurrent valid accepted transfers retain the prior owner until explicit complete owner resolution; conflicting resolutions never select a winner by ID, timestamp or arrival.
+  - Invalid/unenrolled recipients, mismatched acceptance, forged ancestry, cycles, missing dependencies and same-ID collisions fail closed and remain auditable.
+  - No co-organizer takeover or automatic owner recovery is introduced. Device/participant removal follows separately; its integration must invalidate removed transfer recipients.
+  - Full unit/build and focused browser checks pass; root reviews before DONE. No production UI activation yet.

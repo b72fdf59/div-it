@@ -77,6 +77,10 @@ function schemaError(record) {
   return null;
 }
 
+export function validateMembershipRecord(record) {
+  return schemaError(record);
+}
+
 function canonicalKey(record) {
   try {
     return new TextDecoder().decode(canonicalJsonBytes(record));
@@ -188,6 +192,16 @@ function stateAt(heads, genesis, accepted, byId, memo) {
     if (role.conflict) conflicts.push(role.conflict);
   }
   return { participants, organizers, conflicts };
+}
+
+// Shared membership field fold for the signed enrollment projector. It intentionally accepts the
+// original signed graph, including non-roster ancestors, so roster records can name enrollment heads.
+export function foldMembershipStateAt(heads, genesis, accepted, byId) {
+  return stateAt(heads, genesis, accepted, byId, new Map());
+}
+
+export function membershipAncestorsOf(id, byId) {
+  return ancestorsOf(id, byId, new Map());
 }
 
 function fail(reason, recordId) {
