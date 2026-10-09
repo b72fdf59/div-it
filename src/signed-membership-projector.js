@@ -1,12 +1,15 @@
 import { canonicalJsonBytes, verifyRecord } from "./identity-crypto.js";
 import { verifyGroupGenesis } from "./group-genesis.js";
 import { foldMembershipStateAt, membershipAncestorsOf, validateMembershipRecord } from "./membership-projector.js";
+import { parseSignedLedgerRecord } from "./signed-ledger-records.js";
+import { analyzeCausalGraph, maximalCausalFrontier, validateCausalFrontier } from "./causal-graph.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const KEY = /^[A-Za-z0-9_-]{43}$/;
 const SIG = /^[A-Za-z0-9_-]{86}$/;
 const MAX = 256;
-const TYPES = new Set(["invite-issued", "invite-revoked", "device-join-request", "device-enrollment-approved", "owner-device-enrollment-consented", "membership-conflict-resolved", "ownership-transfer-proposed", "ownership-transfer-accepted", "ownership-transfer-resolved"]);
+const verifiedCausalContexts = new WeakMap();
+const TYPES = new Set(["invite-issued", "invite-revoked", "device-join-request", "device-enrollment-approved", "owner-device-enrollment-consented", "membership-conflict-resolved", "ownership-transfer-proposed", "ownership-transfer-accepted", "ownership-transfer-resolved", "device-revoked", "participant-removed"]);
 const BASE = new Set(["group-created", "participant-added", "participant-renamed", "organizer-granted", "organizer-revoked"]);
 const FIELDS = ["id", "recordType", "membershipSchemaVersion", "protocolVersion", "groupId", "author", "createdAt", "membershipHeads", "causalHeads", "dependsOn", "payload", "signature"];
 const AUTHOR = ["participantId", "deviceId", "keyId"];
@@ -19,7 +22,9 @@ const PAYLOADS = {
   "membership-conflict-resolved": ["inviteId", "conflictRecordIds", "selectedRecordId"],
   "ownership-transfer-proposed": ["transferId", "ownerParticipantId", "recipientParticipantId", "recipientDeviceId", "recipientKeyId"],
   "ownership-transfer-accepted": ["proposalId", "transferId"],
-  "ownership-transfer-resolved": ["conflictRecordIds", "selectedRecordId"]
+  "ownership-transfer-resolved": ["conflictRecordIds", "selectedRecordId"],
+  "device-revoked": ["participantId", "deviceId", "keyId", "keyEpoch"],
+  "participant-removed": ["participantId", "keyEpoch"]
 };
 
 const uuid = (value) => typeof value === "string" && UUID.test(value);
@@ -53,9 +58,14 @@ function schemaError(record) {
     if (!exact(record, FIELDS) || !TYPES.has(record.recordType)) return "invalid-enrollment-schema";
     if (record.membershipSchemaVersion !== 1 || record.protocolVersion !== 2) return "unsupported-membership-version";
     if (!uuid(record.id) || !uuid(record.groupId) || !exact(record.author, AUTHOR) || !AUTHOR.every((field) => uuid(record.author[field]))) return "invalid-enrollment-schema";
+    const removal = ["device-revoked", "participant-removed"].includes(record.recordType);
+    const causalHeadsValid = removal
+      ? Array.isArray(record.causalHeads) && record.causalHeads.length <= 64
+        && record.causalHeads.every((id, i) => uuid(id) && (!i || record.causalHeads[i - 1] < id))
+      : Array.isArray(record.causalHeads) && record.causalHeads.length === 0;
     if (!timestamp(record.createdAt) || !Array.isArray(record.membershipHeads) || !record.membershipHeads.length || record.membershipHeads.length > 64
         || !record.membershipHeads.every((id, i) => uuid(id) && (!i || record.membershipHeads[i - 1] < id))
-        || !Array.isArray(record.causalHeads) || record.causalHeads.length || !Array.isArray(record.dependsOn) || record.dependsOn.length
+        || !causalHeadsValid || !Array.isArray(record.dependsOn) || record.dependsOn.length
         || typeof record.signature !== "string" || !SIG.test(record.signature)) return "invalid-enrollment-schema";
     const p = record.payload;
     if (!exact(p, PAYLOADS[record.recordType])) return "invalid-enrollment-payload";
@@ -77,6 +87,10 @@ function schemaError(record) {
           || p.ownerParticipantId === p.recipientParticipantId) return "invalid-enrollment-payload";
     } else if (record.recordType === "ownership-transfer-accepted") {
       if (![p.proposalId, p.transferId].every(uuid)) return "invalid-enrollment-payload";
+    } else if (record.recordType === "device-revoked") {
+      if (![p.participantId, p.deviceId, p.keyId].every(uuid) || !Number.isSafeInteger(p.keyEpoch) || p.keyEpoch < 2) return "invalid-enrollment-payload";
+    } else if (record.recordType === "participant-removed") {
+      if (!uuid(p.participantId) || !Number.isSafeInteger(p.keyEpoch) || p.keyEpoch < 2) return "invalid-enrollment-payload";
     } else if (!Array.isArray(p.conflictRecordIds)
         || p.conflictRecordIds.length < 2 || p.conflictRecordIds.length > 64
         || !p.conflictRecordIds.every((id, i) => uuid(id) && (!i || p.conflictRecordIds[i - 1] < id))
@@ -145,7 +159,70 @@ function stable(diagnostics) {
   return diagnostics.sort((a, b) => `${a.recordId || ""}:${a.status}:${a.reason || ""}:${canonical(a.rawRecord)}`.localeCompare(`${b.recordId || ""}:${b.status}:${b.reason || ""}:${canonical(b.rawRecord)}`));
 }
 
-export async function projectSignedMembership(input, { trustPin, atHeads, allowConflictHeads = false } = {}) {
+/** Authenticate a caller's observed ledger records and bind their verified causal graph as a removal frontier source. */
+export async function createVerifiedCausalContext({ causalRecords, membershipRecords, trustPin, priorContexts = [] } = {}) {
+  if (!Array.isArray(causalRecords) || !Array.isArray(membershipRecords) || !trustPin || !Array.isArray(priorContexts)) {
+    throw new TypeError("invalid-causal-context-input");
+  }
+  const contextOptions = { trustPin, verifiedCausalContexts: priorContexts };
+  const membership = await projectSignedMembership(membershipRecords, contextOptions);
+  if (!membership.groupId || membership.readOnly) throw new Error("causal-context-membership-untrusted");
+  if (priorContexts.some((context) => {
+    const proof = verifiedCausalContexts.get(context);
+    return !proof || context.groupId !== membership.groupId || proof.genesisId !== trustPin.genesisId
+      || proof.publicKeyFingerprint !== trustPin.publicKeyFingerprint;
+  })) {
+    throw new Error("causal-context-invalid-prior-context");
+  }
+  const verified = priorContexts.flatMap((context) => verifiedCausalContexts.get(context)?.sourceRecords || []);
+  for (const raw of causalRecords) {
+    const parsed = parseSignedLedgerRecord(raw);
+    if (!parsed.ok) throw new Error(`causal-context-${parsed.reason}`);
+    const record = parsed.record;
+    if (record.groupId !== membership.groupId) throw new Error("causal-context-group-mismatch");
+    const atHeads = await projectSignedMembership(membershipRecords, { ...contextOptions, atHeads: record.membershipHeads });
+    if (atHeads.groupId !== membership.groupId || atHeads.readOnly) throw new Error("causal-context-membership-untrusted");
+    const participantExists = atHeads.participants.some((participant) => participant.id === record.author.participantId);
+    const device = atHeads.devices.find((item) => item.participantId === record.author.participantId
+      && item.deviceId === record.author.deviceId && item.keyId === record.author.keyId);
+    const keyBytes = device && unb64(device.publicKey);
+    if (!participantExists || !keyBytes) throw new Error("causal-context-unknown-device");
+    const publicKey = await crypto.subtle.importKey("raw", keyBytes, { name: "Ed25519" }, false, ["verify"]);
+    if (!(await verifyRecord(record, publicKey))) throw new Error("causal-context-invalid-signature");
+    verified.push(record);
+  }
+  const uniqueVerified = [...new Map(verified.map((record) => [canonical(record), record])).values()];
+  const graph = analyzeCausalGraph(uniqueVerified, { groupId: membership.groupId });
+  if (!graph.ok) throw new Error(`causal-context-${graph.reason}`);
+  const invalid = graph.diagnostics.find((item) => item.status !== "valid");
+  if (invalid) throw new Error(`causal-context-${invalid.reason}`);
+  const frontier = maximalCausalFrontier(graph, graph.nodes.map((node) => node.id));
+  if (!frontier.ok) throw new Error(`causal-context-${frontier.reason}`);
+  const context = Object.freeze({ groupId: membership.groupId, genesisId: trustPin.genesisId,
+    publicKeyFingerprint: trustPin.publicKeyFingerprint, frontier: Object.freeze([...frontier.heads]),
+    sourceRecordIds: Object.freeze(graph.nodes.map((node) => node.id).sort()) });
+  verifiedCausalContexts.set(context, { graph, sourceRecords: uniqueVerified,
+    genesisId: trustPin.genesisId, publicKeyFingerprint: trustPin.publicKeyFingerprint });
+  return context;
+}
+
+export function isVerifiedCausalContext(context, groupId, trustPin) {
+  const proof = verifiedCausalContexts.get(context);
+  return !!proof && context.groupId === groupId && proof.genesisId === trustPin?.genesisId
+    && proof.publicKeyFingerprint === trustPin?.publicKeyFingerprint;
+}
+
+function causalContextCovers(contexts, groupId, heads, trustPin) {
+  if (!heads.length) return true;
+  for (const context of contexts) {
+    const proof = verifiedCausalContexts.get(context);
+    if (proof && context.groupId === groupId && proof.genesisId === trustPin?.genesisId
+        && proof.publicKeyFingerprint === trustPin?.publicKeyFingerprint && validateCausalFrontier(proof.graph, heads).ok) return true;
+  }
+  return false;
+}
+
+export async function projectSignedMembership(input, { trustPin, atHeads, allowConflictHeads = false, verifiedCausalContexts = [] } = {}) {
   const rawRecords = Array.isArray(input) ? input : [];
   const diagnostics = [];
   const variants = new Map();
@@ -226,12 +303,54 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
   const transferProposals = new Map();
   const transferAcceptances = new Map();
   const transferResolutions = new Map();
+  const deviceRevocations = new Map();
+  const participantRemovals = new Map();
   const pendingRecords = new Set();
+  const pendingReasons = new Map();
+
+  const contexts = Array.isArray(verifiedCausalContexts) ? verifiedCausalContexts : [];
+  function participantRemoved(participantId, closure) {
+    return [...participantRemovals.values()].some((record) => effective.has(record.id) && closure.has(record.id)
+      && record.payload.participantId === participantId);
+  }
+  function deviceRemoved(deviceId, participantId, closure) {
+    return participantRemoved(participantId, closure) || [...deviceRevocations.values()].some((record) => effective.has(record.id)
+      && closure.has(record.id) && record.payload.deviceId === deviceId
+      && (!participantId || record.payload.participantId === participantId));
+  }
+  function keyEpochAt(closure) {
+    return Math.max(1, ...[...deviceRevocations.values(), ...participantRemovals.values()]
+      .filter((record) => effective.has(record.id) && closure.has(record.id)).map((record) => record.payload.keyEpoch));
+  }
+  function authorRemovedBefore(record, closure) {
+    return record && [...deviceRevocations.values(), ...participantRemovals.values()].some((removal) =>
+      effective.has(removal.id) && closure.has(removal.id) && removal.id !== record.id
+      && (removal.recordType === "participant-removed"
+        ? removal.payload.participantId === record.author?.participantId
+        : removal.payload.participantId === record.author?.participantId && removal.payload.deviceId === record.author?.deviceId)
+      && !relation(removal, record.id, byId));
+  }
+  function enrollmentRemovedBefore(approval, closure) {
+    return [...deviceRevocations.values(), ...participantRemovals.values()].some((removal) => {
+      if (!effective.has(removal.id) || !closure.has(removal.id)) return false;
+      const targetMatches = removal.payload.participantId === approval.payload.participantId
+        && (removal.recordType === "participant-removed" || removal.payload.deviceId === approval.payload.deviceId);
+      return targetMatches && !relation(removal, approval.id, byId);
+    });
+  }
 
   function acceptedTransfersAt(closure) {
     let accepted = [...transferAcceptances.values()].filter((record) => closure.has(record.id) && effective.has(record.id))
       .map((record) => ({ record, proposal: transferProposals.get(record.payload.proposalId) }))
-      .filter(({ proposal }) => proposal && closure.has(proposal.id) && effective.has(proposal.id));
+      .filter(({ proposal }) => proposal && closure.has(proposal.id) && effective.has(proposal.id) && !authorRemovedBefore(proposal, closure));
+    accepted = accepted.filter(({ record, proposal }) => ![...deviceRevocations.values(), ...participantRemovals.values()].some((removal) => {
+      if (!effective.has(removal.id) || !closure.has(removal.id)) return false;
+      const targetsParticipant = removal.recordType === "participant-removed"
+        ? removal.payload.participantId === proposal.payload.recipientParticipantId
+        : removal.payload.participantId === proposal.payload.recipientParticipantId
+          && removal.payload.deviceId === proposal.payload.recipientDeviceId;
+      return targetsParticipant && !relation(removal, record.id, byId);
+    }));
     const resolutionGroups = new Map();
     for (const resolution of transferResolutions.values()) {
       const roots = resolution.payload.conflictRecordIds;
@@ -273,13 +392,16 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
     try { closure = closureFromHeads(heads, byId, groupId, genesisId); }
     catch (error) { return { error: error.message }; }
     if ([...closure].some((id) => BASE.has(byId.get(id)?.recordType) && id !== genesisId && !acceptedBase.has(id))) return { error: "invalid-membership-ancestor" };
-    const state = foldMembershipStateAt(heads, genesis, [...acceptedBase.values()].filter((record) => closure.has(record.id)), byId);
+    const state = foldMembershipStateAt(heads, genesis, [...acceptedBase.values()].filter((record) => closure.has(record.id) && !authorRemovedBefore(record, closure)), byId);
     const currentOwner = ownerAt(closure);
+    const removedParticipants = new Set([...participantRemovals.values()].filter((record) => effective.has(record.id) && closure.has(record.id))
+      .map((record) => record.payload.participantId));
     const projection = {
       groupId, groupName: genesis.payload.name, currency: genesis.payload.currency,
       ownerParticipantId: currentOwner,
-      participants: [...state.participants].map(([id, person]) => ({ id, name: person.name })).sort((a, b) => a.id.localeCompare(b.id)),
-      organizers: [...new Set([...state.organizers, currentOwner])].sort(), diagnostics: state.conflicts.map((conflict) => ({ status: "conflicting", reason: conflict.type, participantId: conflict.participantId, recordIds: conflict.recordIds }))
+      participants: [...state.participants].filter(([id]) => !removedParticipants.has(id)).map(([id, person]) => ({ id, name: person.name })).sort((a, b) => a.id.localeCompare(b.id)),
+      organizers: [...new Set([...state.organizers].filter((id) => !removedParticipants.has(id)).concat(removedParticipants.has(currentOwner) ? [] : [currentOwner]))].sort(),
+      keyEpoch: keyEpochAt(closure), diagnostics: state.conflicts.map((conflict) => ({ status: "conflicting", reason: conflict.type, participantId: conflict.participantId, recordIds: conflict.recordIds }))
     };
     return { projection, closure };
   }
@@ -288,6 +410,7 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
     const key = `${author.participantId}:${author.deviceId}:${author.keyId}`;
     const ownerKey = `${genesis.author.participantId}:${genesis.author.deviceId}:${genesis.author.keyId}`;
     const currentOwner = ownerAt(closure);
+    if (deviceRemoved(author.deviceId, author.participantId, closure)) return null;
     if (key === ownerKey && !deviceIdConflicts.has(genesis.author.deviceId)) return { key: genesis.payload.owner.publicKey, participantId: genesis.author.participantId, role: currentOwner === genesis.author.participantId ? "owner" : null, sourceRequestId: null };
     for (const [approvalId, approval] of approvals) {
       if (!closure.has(approvalId) || !effective.has(approvalId)) continue;
@@ -334,6 +457,7 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
     if (["participant-added", "participant-renamed"].includes(record.recordType) && !organizer) { baseErrors.set(record.id, "not-organizer"); return false; }
     const target = record.payload.participantId;
     const exists = state.projection.participants.some((person) => person.id === target);
+    if (record.recordType === "participant-added" && participantRemoved(target, closure)) { baseErrors.set(record.id, "participant-id-tombstoned"); return false; }
     if (record.recordType === "participant-added" && exists) { baseErrors.set(record.id, "participant-already-exists"); return false; }
     if (record.recordType === "participant-renamed" && !exists) { baseErrors.set(record.id, "participant-not-found"); return false; }
     if (["organizer-granted", "organizer-revoked"].includes(record.recordType) && !exists) { baseErrors.set(record.id, "participant-not-found"); return false; }
@@ -344,6 +468,8 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
   }
 
   async function verifyOne(record, allowConflictHeads = false) {
+    if (["device-revoked", "participant-removed"].includes(record.recordType)
+        && !causalContextCovers(contexts, groupId, record.causalHeads, trustPin)) return { pending: "causal-frontier-unverified" };
     const state = await baseAt(record.membershipHeads);
     if (state.error === "invalid-membership-ancestor") return { pending: state.error };
     if (state.error) return { error: state.error };
@@ -356,7 +482,7 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
     if (!signer) return { pending: "unknown-device-at-membership-heads" };
     const owner = signer.role === "owner";
     const organizer = owner || state.projection.organizers.includes(record.author.participantId);
-    if (["invite-issued", "invite-revoked", "device-enrollment-approved"].includes(record.recordType) && !organizer) return { error: "not-organizer" };
+    if (["invite-issued", "invite-revoked", "device-enrollment-approved", "device-revoked", "participant-removed"].includes(record.recordType) && !organizer) return { error: "not-organizer" };
     if (["owner-device-enrollment-consented", "membership-conflict-resolved", "ownership-transfer-proposed", "ownership-transfer-resolved"].includes(record.recordType) && !owner) return { error: "not-owner" };
     const publicBytes = unb64(signer.key);
     if (!publicBytes) return { error: "invalid-authorized-public-key" };
@@ -390,7 +516,7 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
         continue;
       }
       const checked = await verifyOne(record, ["membership-conflict-resolved", "owner-device-enrollment-consented", "ownership-transfer-resolved"].includes(record.recordType));
-      if (checked.pending) { pendingRecords.add(record.id); continue; }
+      if (checked.pending) { pendingRecords.add(record.id); pendingReasons.set(record.id, checked.pending); continue; }
       if (checked.error) { errors.set(record.id, checked.error); continue; }
       const p = record.payload;
       if (record.recordType === "invite-issued") {
@@ -410,6 +536,9 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
             || request.payload.participantId !== p.participantId || request.author.deviceId !== p.deviceId || request.author.keyId !== p.keyId
             || request.payload.publicKeyFingerprint !== p.publicKeyFingerprint || p.genesisId !== genesisId) {
           errors.set(record.id, "approval-binding-mismatch"); continue;
+        }
+        if (participantRemoved(p.participantId, checked.state.closure) || deviceRemoved(p.deviceId, p.participantId, checked.state.closure)) {
+          errors.set(record.id, "identity-already-removed"); continue;
         }
         approvals.set(record.id, record); valid.set(record.id, "approval-candidate");
         const binding = `${p.participantId}:${p.deviceId}:${p.keyId}:${p.publicKeyFingerprint}`;
@@ -452,6 +581,17 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
           errors.set(record.id, "incomplete-transfer-conflict-set"); continue;
         }
         transferResolutions.set(record.id, record); valid.set(record.id, "effective"); effective.add(record.id); changed = true;
+      } else if (record.recordType === "device-revoked") {
+        const device = matchingEnrollment({ participantId: p.participantId, deviceId: p.deviceId, keyId: p.keyId }, checked.state.closure);
+        if (!device) { errors.set(record.id, "device-not-active-at-heads"); continue; }
+        if (p.keyEpoch !== checked.state.projection.keyEpoch + 1) { errors.set(record.id, "invalid-key-epoch"); continue; }
+        deviceRevocations.set(record.id, record); valid.set(record.id, "effective"); effective.add(record.id); changed = true;
+      } else if (record.recordType === "participant-removed") {
+        if (!checked.state.projection.participants.some((person) => person.id === p.participantId)) {
+          errors.set(record.id, "participant-not-active-at-heads"); continue;
+        }
+        if (p.keyEpoch !== checked.state.projection.keyEpoch + 1) { errors.set(record.id, "invalid-key-epoch"); continue; }
+        participantRemovals.set(record.id, record); valid.set(record.id, "effective"); effective.add(record.id); changed = true;
       }
     }
     const selected = resolveInvites({ inviteIssues, inviteRevocations, approvals, resolutions, byId, genesis, consents, valid, deviceIdConflicts, ownerAt, structural });
@@ -604,8 +744,8 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
   if (finalState.error || invalidExplicitHead) {
     return empty(rawRecords, diagnostics.concat({ status: "quarantined", reason: finalState.error || "membership-head-not-effective" }), true);
   }
-  const inviteList = [...inviteIssues.values()].filter((record) => effective.has(record.id)).sort((a, b) => a.payload.inviteId.localeCompare(b.payload.inviteId));
-  const ownershipTransfers = [...transferProposals.values()].filter((proposal) => finalState.closure.has(proposal.id)).map((proposal) => {
+  const inviteList = [...inviteIssues.values()].filter((record) => effective.has(record.id) && !authorRemovedBefore(record, finalState.closure)).sort((a, b) => a.payload.inviteId.localeCompare(b.payload.inviteId));
+  const ownershipTransfers = [...transferProposals.values()].filter((proposal) => finalState.closure.has(proposal.id) && !authorRemovedBefore(proposal, finalState.closure)).map((proposal) => {
     const acceptance = [...transferAcceptances.values()].find((item) => item.payload.proposalId === proposal.id && effective.has(item.id) && finalState.closure.has(item.id));
     return { transferId: proposal.payload.transferId, proposalId: proposal.id, ownerParticipantId: proposal.payload.ownerParticipantId,
       recipientParticipantId: proposal.payload.recipientParticipantId, recipientDeviceId: proposal.payload.recipientDeviceId,
@@ -629,12 +769,15 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
   const devices = [];
   const ownerDevice = { participantId: genesis.author.participantId, deviceId: genesis.author.deviceId, keyId: genesis.author.keyId,
     publicKey: genesis.payload.owner.publicKey, publicKeyFingerprint: trustPin.publicKeyFingerprint, requestId: null, approvalId: null, genesisId };
-  deviceMap.set(ownerDevice.deviceId, ownerDevice); devices.push(ownerDevice);
+  if (!deviceRemoved(ownerDevice.deviceId, ownerDevice.participantId, finalState.closure)) {
+    deviceMap.set(ownerDevice.deviceId, ownerDevice); devices.push(ownerDevice);
+  }
   for (const [approvalId, approval] of approvals) {
     if (!effective.has(approvalId) || !finalState.closure.has(approvalId)) continue;
     const req = requests.get(approval.payload.requestId);
     const device = { participantId: approval.payload.participantId, deviceId: approval.payload.deviceId, keyId: approval.payload.keyId,
       publicKey: req.payload.publicKey, publicKeyFingerprint: req.payload.publicKeyFingerprint, requestId: req.id, approvalId };
+    if (deviceRemoved(device.deviceId, device.participantId, finalState.closure)) continue;
     const prior = deviceMap.get(device.deviceId);
     if (!prior) { deviceMap.set(device.deviceId, device); devices.push(device); }
     else if (prior.participantId !== device.participantId || prior.keyId !== device.keyId || prior.publicKeyFingerprint !== device.publicKeyFingerprint) {
@@ -650,12 +793,14 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
   }
   for (const record of transitions) {
     if (errors.has(record.id) || valid.has(record.id)) continue;
-    const status = pendingRecords.has(record.id) ? "pending" : "pending";
-    diagnostics.push(diag(status, status === "pending" ? "membership-conflict-or-dependency-pending" : "invalid-membership-transition", record));
+    diagnostics.push(diag("pending", pendingReasons.get(record.id) || "membership-conflict-or-dependency-pending", record));
   }
   for (const [id, state] of valid) {
     const record = byId.get(id);
     if (state === "request-proof") diagnostics.push(diag("pending", "join-request-pending", record));
+    else if (record?.recordType === "device-enrollment-approved" && finalState.closure.has(id) && enrollmentRemovedBefore(record, finalState.closure)) {
+      diagnostics.push(diag("conflicting", "identity-already-removed", record));
+    }
     else if (state !== "effective" && state !== "request-proof" && !effective.has(id)) diagnostics.push(diag("conflicting", state, record));
     else if (state === "effective") diagnostics.push(diag("effective", "membership-transition", record));
   }
@@ -665,6 +810,17 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
       revoked: (inviteRevocations.get(item.payload.inviteId) || []).some((revocation) => effective.has(revocation.id)) })),
     ownershipTransfers,
     transferConflictRecordIds: transferConflict,
+    tombstones: {
+      keyEpoch: finalState.projection.keyEpoch,
+      devices: [...deviceRevocations.values()].filter((record) => effective.has(record.id) && finalState.closure.has(record.id))
+        .map((record) => ({ participantId: record.payload.participantId, deviceId: record.payload.deviceId, keyId: record.payload.keyId,
+          recordId: record.id, causalHeads: [...record.causalHeads], keyEpoch: record.payload.keyEpoch }))
+        .sort((a, b) => a.recordId.localeCompare(b.recordId)),
+      participants: [...participantRemovals.values()].filter((record) => effective.has(record.id) && finalState.closure.has(record.id))
+        .map((record) => ({ participantId: record.payload.participantId, recordId: record.id,
+          causalHeads: [...record.causalHeads], keyEpoch: record.payload.keyEpoch }))
+        .sort((a, b) => a.recordId.localeCompare(b.recordId))
+    },
     requests: [...requests.values()].filter((item) => item.membershipHeads.some((head) => finalState.closure.has(head))).map((item) => ({ requestId: item.id, inviteId: item.payload.inviteId, participantId: item.payload.participantId,
       deviceId: item.author.deviceId, keyId: item.author.keyId, publicKey: item.payload.publicKey, status: effective.has(item.id) ? "pending" : "pending" })).sort((a, b) => a.requestId.localeCompare(b.requestId)),
     devices: devices.sort((a, b) => a.deviceId.localeCompare(b.deviceId)),
@@ -675,9 +831,9 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
   };
 }
 
-export async function resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role }) {
+export async function resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role, verifiedCausalContexts = [] }) {
   if (!identity || !Array.isArray(membershipHeads) || !Array.isArray(records) || !trustPin) return null;
-  const projection = await projectSignedMembership(records, { trustPin, atHeads: membershipHeads, allowConflictHeads: role === "owner" });
+  const projection = await projectSignedMembership(records, { trustPin, atHeads: membershipHeads, allowConflictHeads: role === "owner", verifiedCausalContexts });
   if (projection.groupId == null || projection.readOnly) return null;
   const participantId = identity.participantId;
   if (role === "owner" && participantId !== projection.ownerParticipantId) return null;
@@ -766,5 +922,5 @@ function resolveInvites({ inviteIssues, inviteRevocations, approvals, resolution
 
 function empty(rawRecords, diagnostics, readOnly) {
   return { groupId: null, participants: [], organizers: [], ownerParticipantId: null, invites: [], requests: [], devices: [], ownershipTransfers: [], transferConflictRecordIds: [], heads: [],
-    diagnostics: stable(diagnostics), rawRecords, readOnly };
+    tombstones: { keyEpoch: null, devices: [], participants: [] }, diagnostics: stable(diagnostics), rawRecords, readOnly };
 }

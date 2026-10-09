@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { exportDevicePublicKey, generateDeviceSigningKeyPair, signRecord } from "./src/identity-crypto.js";
-import { approveJoinRequestCommand, createInviteCommand, createJoinRequestCommand, createInviteRevocationCommand, createInviteConflictResolutionCommand, createOwnerDeviceConsentCommand, createOwnershipTransferProposalCommand, createOwnershipTransferAcceptanceCommand, createOwnershipTransferResolutionCommand, projectMembershipEnrollment } from "./src/membership-invitations.js";
+import { approveJoinRequestCommand, createInviteCommand, createJoinRequestCommand, createInviteRevocationCommand, createInviteConflictResolutionCommand, createOwnerDeviceConsentCommand, createOwnershipTransferProposalCommand, createOwnershipTransferAcceptanceCommand, createOwnershipTransferResolutionCommand, createDeviceRevocationCommand, createParticipantRemovalCommand, createVerifiedCausalContext, projectMembershipEnrollment } from "./src/membership-invitations.js";
+import { createSignedLedgerRecord } from "./src/signed-ledger-records.js";
 
 function encode(bytes) { let out = ""; for (const byte of bytes) out += String.fromCharCode(byte); return btoa(out).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_"); }
 const uuid = () => crypto.randomUUID();
@@ -24,6 +25,27 @@ async function setup() {
   const records = [genesis, memberRecord];
   return { genesis, trustPin, owner, member, records };
 }
+
+test("causal proof contexts cannot cross group or trusted-genesis pins", async () => {
+  const ctx = await setup();
+  const local = await createVerifiedCausalContext({ causalRecords: [], membershipRecords: ctx.records, trustPin: ctx.trustPin });
+  await assert.rejects(createVerifiedCausalContext({ causalRecords: [], membershipRecords: ctx.records, trustPin: ctx.trustPin,
+    priorContexts: [{ groupId: ctx.genesis.groupId, frontier: [] }] }), /causal-context-invalid-prior-context/);
+  const otherGroup = await setup();
+  const otherGroupContext = await createVerifiedCausalContext({ causalRecords: [], membershipRecords: otherGroup.records, trustPin: otherGroup.trustPin });
+  await assert.rejects(createVerifiedCausalContext({ causalRecords: [], membershipRecords: ctx.records, trustPin: ctx.trustPin,
+    priorContexts: [otherGroupContext] }), /causal-context-invalid-prior-context/);
+  const foreignGenesis = structuredClone(ctx.genesis);
+  foreignGenesis.id = uuid();
+  foreignGenesis.payload.name = "Other trusted history";
+  foreignGenesis.signature = await signRecord(foreignGenesis, ctx.owner.privateKey);
+  const foreignContext = await createVerifiedCausalContext({ causalRecords: [], membershipRecords: [foreignGenesis],
+    trustPin: { genesisId: foreignGenesis.id, publicKeyFingerprint: ctx.trustPin.publicKeyFingerprint } });
+  assert.equal(foreignContext.groupId, ctx.genesis.groupId);
+  await assert.rejects(createVerifiedCausalContext({ causalRecords: [], membershipRecords: ctx.records, trustPin: ctx.trustPin,
+    priorContexts: [foreignContext] }), /causal-context-invalid-prior-context/);
+  assert.deepEqual(local.frontier, []);
+});
 
 async function rosterRecord({ groupId, author, privateKey, head, recordType, payload }) {
   const record = { id: uuid(), recordType, membershipSchemaVersion: 1, protocolVersion: 2, groupId,
@@ -448,4 +470,194 @@ test("multi-generation transfer forks retain common owner independent of record 
   assert.equal(resolved.ownerParticipantId, participantD);
   assert.equal(resolved.organizers.includes(participantC), true);
   assert.deepEqual(resolved.transferConflictRecordIds, []);
+});
+
+test("device tombstones require verified causal heads and preserve earlier membership keys", async () => {
+  const ctx = await setup();
+  const invite = await issueInvite(ctx, ctx.owner, ctx.member.participantId);
+  const memberIdentity = { ...ctx.member, ...ctx.member.pair };
+  const request = await requestJoin(ctx, invite, memberIdentity);
+  const approval = await approve(ctx, invite, request, ctx.owner);
+  const grant = await rosterRecord({ groupId: ctx.genesis.groupId, author: ctx.owner, privateKey: ctx.owner.privateKey,
+    head: approval.id, recordType: "organizer-granted", payload: { participantId: ctx.member.participantId } });
+  ctx.records.push(grant);
+  const ledgerRecord = await createSignedLedgerRecord({ id: uuid(), type: "expense-created", groupId: ctx.genesis.groupId,
+    author: { participantId: memberIdentity.participantId, deviceId: memberIdentity.deviceId, keyId: memberIdentity.keyId },
+    createdAt: "2026-10-08T00:00:00.000Z", membershipHeads: [grant.id], causalHeads: [], dependsOn: [],
+    payload: { expenseId: uuid(), description: "Observed expense", currency: "USD", amount: 100,
+      payerId: memberIdentity.participantId, splits: [{ participantId: memberIdentity.participantId, amount: 100 }] }
+  }, memberIdentity.privateKey);
+  const causalContext = await createVerifiedCausalContext({ causalRecords: [ledgerRecord], membershipRecords: ctx.records, trustPin: ctx.trustPin });
+  assert.deepEqual(causalContext.frontier, [ledgerRecord.id]);
+  await assert.rejects(createDeviceRevocationCommand({ participantId: ctx.member.participantId, deviceId: ctx.member.deviceId,
+    keyId: ctx.member.keyId, groupId: ctx.genesis.groupId, membershipHeads: [grant.id], identity: ctx.owner,
+    records: ctx.records, trustPin: ctx.trustPin, causalContext: { groupId: ctx.genesis.groupId, frontier: [ledgerRecord.id] } }), /causal-frontier-unverified/);
+  const removal = await createDeviceRevocationCommand({ participantId: ctx.member.participantId, deviceId: ctx.member.deviceId,
+    keyId: ctx.member.keyId, groupId: ctx.genesis.groupId, membershipHeads: [grant.id], identity: ctx.owner,
+    records: ctx.records, trustPin: ctx.trustPin, causalContext });
+  ctx.records.push(removal);
+  const withoutCausalProof = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin });
+  assert.ok(withoutCausalProof.diagnostics.some((item) => item.recordId === removal.id && item.reason === "causal-frontier-unverified"));
+  assert.equal(withoutCausalProof.devices.some((device) => device.deviceId === ctx.member.deviceId), true);
+  const oversized = structuredClone(removal);
+  oversized.id = uuid();
+  oversized.causalHeads = Array.from({ length: 65 }, uuid).sort();
+  const malformed = await projectMembershipEnrollment([...ctx.records, oversized], { trustPin: ctx.trustPin, verifiedCausalContexts: [causalContext] });
+  assert.ok(malformed.diagnostics.some((item) => item.recordId === oversized.id && item.reason === "invalid-enrollment-schema"));
+  const projection = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin, verifiedCausalContexts: [causalContext] });
+  assert.equal(projection.devices.some((device) => device.deviceId === ctx.member.deviceId), false);
+  assert.equal(projection.tombstones.devices.length, 1);
+  assert.deepEqual(projection.tombstones.devices[0].causalHeads, [ledgerRecord.id]);
+  assert.equal(projection.tombstones.keyEpoch, 2);
+  const historical = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin, atHeads: [grant.id] });
+  assert.equal(historical.devices.some((device) => device.deviceId === ctx.member.deviceId), true);
+  await assert.rejects(createInviteCommand({ groupId: ctx.genesis.groupId, participantId: ctx.member.participantId,
+    membershipHeads: [removal.id], identity: memberIdentity, records: ctx.records, trustPin: ctx.trustPin }), /not-organizer/);
+  const postRemovalInvite = await createInviteCommand({ groupId: ctx.genesis.groupId, participantId: ctx.member.participantId,
+    membershipHeads: [removal.id], identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin,
+    verifiedCausalContexts: [causalContext] });
+  assert.ok(postRemovalInvite.record);
+  const rotatedIdentity = { participantId: ctx.member.participantId, deviceId: uuid(), keyId: uuid(), ...await generateDeviceSigningKeyPair() };
+  const rotatedRequest = await createJoinRequestCommand({ invite: postRemovalInvite.record, token: postRemovalInvite.token,
+    groupId: ctx.genesis.groupId, membershipHeads: [postRemovalInvite.record.id], identity: rotatedIdentity,
+    records: [...ctx.records, postRemovalInvite.record], trustPin: ctx.trustPin, verifiedCausalContexts: [causalContext] });
+  const rotatedApproval = await approveJoinRequestCommand({ invite: postRemovalInvite.record, request: rotatedRequest,
+    token: postRemovalInvite.token, genesis: ctx.genesis, trustPin: ctx.trustPin, membershipHeads: [postRemovalInvite.record.id],
+    identity: ctx.owner, records: [...ctx.records, postRemovalInvite.record, rotatedRequest], verifiedCausalContexts: [causalContext] });
+  const rotatedProjection = await projectMembershipEnrollment([...ctx.records, postRemovalInvite.record, rotatedRequest, rotatedApproval],
+    { trustPin: ctx.trustPin, verifiedCausalContexts: [causalContext] });
+  assert.equal(rotatedProjection.devices.some((device) => device.deviceId === rotatedIdentity.deviceId), true);
+  assert.equal(rotatedProjection.devices.some((device) => device.deviceId === ctx.member.deviceId), false);
+});
+
+test("participant tombstones remove concurrent devices and prevent reenrollment", async () => {
+  const ctx = await setup();
+  const invite = await issueInvite(ctx, ctx.owner, ctx.member.participantId);
+  const memberIdentity = { ...ctx.member, ...ctx.member.pair };
+  const request = await requestJoin(ctx, invite, memberIdentity);
+  const approval = await approve(ctx, invite, request, ctx.owner);
+  const concurrentInvite = await issueInvite(ctx, ctx.owner, ctx.member.participantId, [approval.id]);
+  const concurrentIdentity = { participantId: ctx.member.participantId, deviceId: uuid(), keyId: uuid(), ...await generateDeviceSigningKeyPair() };
+  const concurrentRequest = await requestJoin(ctx, concurrentInvite, concurrentIdentity);
+  const concurrentApproval = await approve(ctx, concurrentInvite, concurrentRequest, ctx.owner);
+  const futureInvite = await issueInvite(ctx, ctx.owner, ctx.member.participantId, [approval.id]);
+  const context = await createVerifiedCausalContext({ causalRecords: [], membershipRecords: ctx.records, trustPin: ctx.trustPin });
+  const removal = await createParticipantRemovalCommand({ participantId: ctx.member.participantId, groupId: ctx.genesis.groupId,
+    membershipHeads: [futureInvite.record.id], identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin, causalContext: context });
+  ctx.records.push(removal);
+  const projection = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin, verifiedCausalContexts: [context] });
+  assert.equal(projection.participants.some((person) => person.id === ctx.member.participantId), false);
+  assert.equal(projection.devices.some((device) => device.participantId === ctx.member.participantId), false);
+  assert.deepEqual(projection.tombstones.participants.map((item) => item.participantId), [ctx.member.participantId]);
+  assert.ok(projection.diagnostics.some((item) => item.recordId === concurrentApproval.id && item.reason === "identity-already-removed"));
+  const reenrollmentIdentity = { participantId: ctx.member.participantId, deviceId: uuid(), keyId: uuid(), ...await generateDeviceSigningKeyPair() };
+  const reenrollmentRequest = await requestJoin(ctx, futureInvite, reenrollmentIdentity, [removal.id]);
+  const reenrollmentApproval = await approve(ctx, futureInvite, reenrollmentRequest, ctx.owner, [removal.id]);
+  const afterAttempt = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin, verifiedCausalContexts: [context] });
+  assert.equal(afterAttempt.devices.some((device) => device.deviceId === reenrollmentIdentity.deviceId), false);
+  assert.ok(afterAttempt.diagnostics.some((item) => item.recordId === reenrollmentApproval.id && item.reason === "identity-already-removed"));
+  assert.equal(afterAttempt.devices.some((device) => device.deviceId === concurrentIdentity.deviceId), false);
+  assert.equal(afterAttempt.tombstones.participants[0].recordId, removal.id);
+  const reordered = await projectMembershipEnrollment([...ctx.records].reverse(), { trustPin: ctx.trustPin, verifiedCausalContexts: [context] });
+  assert.deepEqual(reordered.devices, afterAttempt.devices);
+  assert.deepEqual(reordered.tombstones, afterAttempt.tombstones);
+});
+
+test("only active organizers can remove identities; revoking the last owner device locks owner administration", async () => {
+  const ctx = await setup();
+  const invite = await issueInvite(ctx, ctx.owner, ctx.member.participantId);
+  const identity = { ...ctx.member, ...ctx.member.pair };
+  const request = await requestJoin(ctx, invite, identity);
+  const approval = await approve(ctx, invite, request, ctx.owner);
+  const grant = await rosterRecord({ groupId: ctx.genesis.groupId, author: ctx.owner, privateKey: ctx.owner.privateKey,
+    head: approval.id, recordType: "organizer-granted", payload: { participantId: identity.participantId } });
+  ctx.records.push(grant);
+  const context = await createVerifiedCausalContext({ causalRecords: [], membershipRecords: ctx.records, trustPin: ctx.trustPin });
+  await assert.rejects(createParticipantRemovalCommand({ participantId: ctx.owner.participantId, groupId: ctx.genesis.groupId,
+    membershipHeads: [approval.id], identity, records: ctx.records, trustPin: ctx.trustPin, causalContext: context }), /not-organizer/);
+  const removal = await createDeviceRevocationCommand({ participantId: ctx.owner.participantId, deviceId: ctx.owner.deviceId,
+    keyId: ctx.owner.keyId, groupId: ctx.genesis.groupId, membershipHeads: [grant.id], identity, records: ctx.records,
+    trustPin: ctx.trustPin, causalContext: context });
+  ctx.records.push(removal);
+  const projection = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin, verifiedCausalContexts: [context] });
+  assert.equal(projection.ownerParticipantId, ctx.owner.participantId);
+  assert.equal(projection.devices.some((device) => device.deviceId === ctx.owner.deviceId), false);
+  await assert.rejects(createOwnershipTransferProposalCommand({ transferId: uuid(), ownerParticipantId: identity.participantId,
+    recipientParticipantId: ctx.owner.participantId, recipientDeviceId: ctx.owner.deviceId, recipientKeyId: ctx.owner.keyId,
+    groupId: ctx.genesis.groupId, membershipHeads: [removal.id], identity, records: ctx.records, trustPin: ctx.trustPin }), /not-owner/);
+  await assert.rejects(createInviteCommand({ groupId: ctx.genesis.groupId, participantId: identity.participantId,
+    membershipHeads: [removal.id], identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin }), /not-organizer/);
+});
+
+test("participant removal concurrent with ownership acceptance keeps the prior owner", async () => {
+  const ctx = await setup();
+  const invite = await issueInvite(ctx, ctx.owner, ctx.member.participantId);
+  const identity = { ...ctx.member, ...ctx.member.pair };
+  const request = await requestJoin(ctx, invite, identity);
+  const approval = await approve(ctx, invite, request, ctx.owner);
+  const proposal = await createOwnershipTransferProposalCommand({ transferId: uuid(), ownerParticipantId: ctx.owner.participantId,
+    recipientParticipantId: identity.participantId, recipientDeviceId: identity.deviceId, recipientKeyId: identity.keyId,
+    groupId: ctx.genesis.groupId, membershipHeads: [approval.id], identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(proposal);
+  const acceptance = await createOwnershipTransferAcceptanceCommand({ proposal, transferId: proposal.payload.transferId,
+    groupId: ctx.genesis.groupId, membershipHeads: [proposal.id], identity, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(acceptance);
+  const context = await createVerifiedCausalContext({ causalRecords: [], membershipRecords: ctx.records, trustPin: ctx.trustPin });
+  const removal = await createParticipantRemovalCommand({ participantId: identity.participantId, groupId: ctx.genesis.groupId,
+    membershipHeads: [approval.id], identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin, causalContext: context });
+  ctx.records.push(removal);
+  const projection = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin, verifiedCausalContexts: [context] });
+  assert.equal(projection.ownerParticipantId, ctx.owner.participantId);
+  assert.equal(projection.devices.some((device) => device.participantId === identity.participantId), false);
+  const historical = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin, atHeads: [acceptance.id] });
+  assert.equal(historical.ownerParticipantId, identity.participantId);
+});
+
+test("a completed transfer stays with the new owner after their last device is revoked", async () => {
+  const ctx = await setup();
+  const invite = await issueInvite(ctx, ctx.owner, ctx.member.participantId);
+  const identity = { ...ctx.member, ...ctx.member.pair };
+  const request = await requestJoin(ctx, invite, identity);
+  const approval = await approve(ctx, invite, request, ctx.owner);
+  const proposal = await createOwnershipTransferProposalCommand({ transferId: uuid(), ownerParticipantId: ctx.owner.participantId,
+    recipientParticipantId: identity.participantId, recipientDeviceId: identity.deviceId, recipientKeyId: identity.keyId,
+    groupId: ctx.genesis.groupId, membershipHeads: [approval.id], identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(proposal);
+  const acceptance = await createOwnershipTransferAcceptanceCommand({ proposal, groupId: ctx.genesis.groupId,
+    membershipHeads: [proposal.id], identity, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(acceptance);
+  const context = await createVerifiedCausalContext({ causalRecords: [], membershipRecords: ctx.records, trustPin: ctx.trustPin });
+  const removal = await createDeviceRevocationCommand({ participantId: identity.participantId, deviceId: identity.deviceId,
+    keyId: identity.keyId, groupId: ctx.genesis.groupId, membershipHeads: [acceptance.id], identity: ctx.owner,
+    records: ctx.records, trustPin: ctx.trustPin, causalContext: context });
+  ctx.records.push(removal);
+  const projection = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin, verifiedCausalContexts: [context] });
+  assert.equal(projection.ownerParticipantId, identity.participantId);
+  assert.equal(projection.devices.some((device) => device.deviceId === identity.deviceId), false);
+  await assert.rejects(createOwnershipTransferProposalCommand({ groupId: ctx.genesis.groupId,
+    recipientParticipantId: ctx.owner.participantId, recipientDeviceId: ctx.owner.deviceId, recipientKeyId: ctx.owner.keyId,
+    membershipHeads: [removal.id], identity, records: ctx.records, trustPin: ctx.trustPin, verifiedCausalContexts: [context] }), /not-owner/);
+});
+
+test("participant removal after an accepted transfer preserves owner history but removes the participant", async () => {
+  const ctx = await setup();
+  const invite = await issueInvite(ctx, ctx.owner, ctx.member.participantId);
+  const identity = { ...ctx.member, ...ctx.member.pair };
+  const request = await requestJoin(ctx, invite, identity);
+  const approval = await approve(ctx, invite, request, ctx.owner);
+  const proposal = await createOwnershipTransferProposalCommand({ transferId: uuid(), ownerParticipantId: ctx.owner.participantId,
+    recipientParticipantId: identity.participantId, recipientDeviceId: identity.deviceId, recipientKeyId: identity.keyId,
+    groupId: ctx.genesis.groupId, membershipHeads: [approval.id], identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(proposal);
+  const acceptance = await createOwnershipTransferAcceptanceCommand({ proposal, groupId: ctx.genesis.groupId,
+    membershipHeads: [proposal.id], identity, records: ctx.records, trustPin: ctx.trustPin });
+  ctx.records.push(acceptance);
+  const context = await createVerifiedCausalContext({ causalRecords: [], membershipRecords: ctx.records, trustPin: ctx.trustPin });
+  const removal = await createParticipantRemovalCommand({ participantId: identity.participantId, groupId: ctx.genesis.groupId,
+    membershipHeads: [acceptance.id], identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin, causalContext: context });
+  ctx.records.push(removal);
+  const projection = await projectMembershipEnrollment(ctx.records, { trustPin: ctx.trustPin, verifiedCausalContexts: [context] });
+  assert.equal(projection.ownerParticipantId, identity.participantId);
+  assert.equal(projection.participants.some((person) => person.id === identity.participantId), false);
+  assert.equal(projection.devices.some((device) => device.participantId === identity.participantId), false);
 });

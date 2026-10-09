@@ -1,6 +1,6 @@
 import { canonicalJsonBytes, exportDevicePublicKey, signRecord, verifyRecord } from "./identity-crypto.js";
 import { verifyGroupGenesis } from "./group-genesis.js";
-import { projectSignedMembership, resolveMembershipAuthority } from "./signed-membership-projector.js";
+import { createVerifiedCausalContext, isVerifiedCausalContext, projectSignedMembership, resolveMembershipAuthority } from "./signed-membership-projector.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const BASE64URL_32 = /^[A-Za-z0-9_-]{43}$/;
@@ -121,12 +121,12 @@ function membershipHeadError(record, byId, genesisId) {
   } catch (error) { return error.message; }
 }
 
-function makeEnvelope(type, groupId, author, heads, payload) {
+function makeEnvelope(type, groupId, author, heads, payload, causalHeads = []) {
   if (!validHeads([...heads].sort())) throw new TypeError("invalid-membership-heads");
   return {
     id: crypto.randomUUID(), recordType: type, membershipSchemaVersion: 1, protocolVersion: 2, groupId,
     author: { participantId: author.participantId, deviceId: author.deviceId, keyId: author.keyId },
-    createdAt: new Date().toISOString(), membershipHeads: [...new Set(heads)].sort(), causalHeads: [], dependsOn: [], payload
+    createdAt: new Date().toISOString(), membershipHeads: [...new Set(heads)].sort(), causalHeads: [...causalHeads].sort(), dependsOn: [], payload
   };
 }
 
@@ -137,8 +137,8 @@ async function hashToken(token) {
   return `sha256:${encode(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))}`;
 }
 
-export async function createInviteCommand({ groupId, participantId, membershipHeads, identity, records, trustPin, expiresAt = null }) {
-  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "organizer" });
+export async function createInviteCommand({ groupId, participantId, membershipHeads, identity, records, trustPin, expiresAt = null, verifiedCausalContexts = [] }) {
+  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "organizer", verifiedCausalContexts });
   if (!authority || groupId !== authority.projection.groupId) throw new Error("not-organizer");
   if (!authority.projection.participants.some((person) => person.id === participantId)) throw new Error("invite-participant-not-found");
   if (!isUuid(groupId) || !isUuid(participantId)) throw new TypeError("invalid-invite-target");
@@ -152,8 +152,8 @@ export async function createInviteCommand({ groupId, participantId, membershipHe
   return { record, token };
 }
 
-export async function createJoinRequestCommand({ invite, token, groupId, membershipHeads, identity, records, trustPin }) {
-  const projection = await projectSignedMembership(records, { trustPin, atHeads: membershipHeads });
+export async function createJoinRequestCommand({ invite, token, groupId, membershipHeads, identity, records, trustPin, verifiedCausalContexts = [] }) {
+  const projection = await projectSignedMembership(records, { trustPin, atHeads: membershipHeads, verifiedCausalContexts });
   const accepted = projection.invites.find((item) => item.recordId === invite?.id && item.inviteId === invite?.payload?.inviteId);
   if (!accepted || accepted.revoked || groupId !== projection.groupId || !sameRecord(records, invite)) throw new Error("invite-not-authenticated-at-heads");
   if (schemaError(invite) || invite.recordType !== "invite-issued" || invite.payload.tokenHash !== await hashToken(token)) {
@@ -168,8 +168,8 @@ export async function createJoinRequestCommand({ invite, token, groupId, members
   return record;
 }
 
-export async function approveJoinRequestCommand({ invite, request, token, genesis, trustPin, membershipHeads, identity, records }) {
-  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "organizer" });
+export async function approveJoinRequestCommand({ invite, request, token, genesis, trustPin, membershipHeads, identity, records, verifiedCausalContexts = [] }) {
+  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "organizer", verifiedCausalContexts });
   if (!authority || invite?.groupId !== authority.projection.groupId || request?.groupId !== authority.projection.groupId) throw new Error("not-organizer");
   const accepted = authority.projection.invites.find((item) => item.recordId === invite?.id && item.inviteId === invite?.payload?.inviteId);
   if (!accepted || accepted.revoked || !sameRecord(records, invite)) throw new Error("invite-not-authenticated-at-heads");
@@ -191,8 +191,8 @@ export async function approveJoinRequestCommand({ invite, request, token, genesi
   return record;
 }
 
-export async function createOwnerDeviceConsentCommand({ approval, groupId, membershipHeads, identity, records, trustPin }) {
-  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "owner" });
+export async function createOwnerDeviceConsentCommand({ approval, groupId, membershipHeads, identity, records, trustPin, verifiedCausalContexts = [] }) {
+  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "owner", verifiedCausalContexts });
   if (!authority || groupId !== authority.projection.groupId) throw new Error("not-owner");
   if (schemaError(approval) || approval.recordType !== "device-enrollment-approved"
       || approval.payload.participantId !== identity.participantId) throw new Error("invalid-owner-device-approval");
@@ -204,8 +204,8 @@ export async function createOwnerDeviceConsentCommand({ approval, groupId, membe
   return record;
 }
 
-export async function createInviteRevocationCommand({ inviteId, groupId, membershipHeads, identity, records, trustPin }) {
-  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "organizer" });
+export async function createInviteRevocationCommand({ inviteId, groupId, membershipHeads, identity, records, trustPin, verifiedCausalContexts = [] }) {
+  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "organizer", verifiedCausalContexts });
   if (!authority || groupId !== authority.projection.groupId) throw new Error("not-organizer");
   if (!isUuid(inviteId) || !isUuid(groupId)) throw new TypeError("invalid-invite-id");
   const record = makeEnvelope("invite-revoked", groupId, identity, membershipHeads, { inviteId });
@@ -213,8 +213,38 @@ export async function createInviteRevocationCommand({ inviteId, groupId, members
   return record;
 }
 
-export async function createInviteConflictResolutionCommand({ inviteId, conflictRecordIds, selectedRecordId, groupId, membershipHeads, identity, records, trustPin }) {
-  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "owner" });
+export async function createDeviceRevocationCommand({ participantId, deviceId, keyId, groupId, membershipHeads, identity, records, trustPin, causalContext, verifiedCausalContexts = [] }) {
+  if (!isVerifiedCausalContext(causalContext, groupId, trustPin)) throw new Error("causal-frontier-unverified");
+  const contexts = [...verifiedCausalContexts, causalContext];
+  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "organizer", verifiedCausalContexts: contexts });
+  if (!authority || groupId !== authority.projection.groupId) throw new Error("not-organizer");
+  if (!isUuid(participantId) || !isUuid(deviceId) || !isUuid(keyId)) throw new TypeError("invalid-removal-target");
+  if (!authority.projection.devices.some((device) => device.participantId === participantId && device.deviceId === deviceId && device.keyId === keyId)) {
+    throw new Error("device-not-active-at-heads");
+  }
+  const record = makeEnvelope("device-revoked", groupId, identity, membershipHeads, {
+    participantId, deviceId, keyId, keyEpoch: authority.projection.keyEpoch + 1
+  }, causalContext.frontier);
+  record.signature = await signRecord(record, identity.privateKey);
+  return record;
+}
+
+export async function createParticipantRemovalCommand({ participantId, groupId, membershipHeads, identity, records, trustPin, causalContext, verifiedCausalContexts = [] }) {
+  if (!isVerifiedCausalContext(causalContext, groupId, trustPin)) throw new Error("causal-frontier-unverified");
+  const contexts = [...verifiedCausalContexts, causalContext];
+  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "organizer", verifiedCausalContexts: contexts });
+  if (!authority || groupId !== authority.projection.groupId) throw new Error("not-organizer");
+  if (!isUuid(participantId)) throw new TypeError("invalid-removal-target");
+  if (!authority.projection.participants.some((participant) => participant.id === participantId)) throw new Error("participant-not-active-at-heads");
+  const record = makeEnvelope("participant-removed", groupId, identity, membershipHeads, {
+    participantId, keyEpoch: authority.projection.keyEpoch + 1
+  }, causalContext.frontier);
+  record.signature = await signRecord(record, identity.privateKey);
+  return record;
+}
+
+export async function createInviteConflictResolutionCommand({ inviteId, conflictRecordIds, selectedRecordId, groupId, membershipHeads, identity, records, trustPin, verifiedCausalContexts = [] }) {
+  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "owner", verifiedCausalContexts });
   if (!authority || groupId !== authority.projection.groupId) throw new Error("not-owner");
   const record = makeEnvelope("membership-conflict-resolved", groupId, identity, membershipHeads, {
     inviteId, conflictRecordIds: [...conflictRecordIds].sort(), selectedRecordId
@@ -223,8 +253,8 @@ export async function createInviteConflictResolutionCommand({ inviteId, conflict
   return record;
 }
 
-export async function createOwnershipTransferProposalCommand({ groupId, recipientParticipantId, recipientDeviceId, recipientKeyId, membershipHeads, identity, records, trustPin }) {
-  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "owner" });
+export async function createOwnershipTransferProposalCommand({ groupId, recipientParticipantId, recipientDeviceId, recipientKeyId, membershipHeads, identity, records, trustPin, verifiedCausalContexts = [] }) {
+  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "owner", verifiedCausalContexts });
   if (!authority || groupId !== authority.projection.groupId) throw new Error("not-owner");
   const recipient = authority.projection.devices.find((device) => device.participantId === recipientParticipantId
     && device.deviceId === recipientDeviceId && device.keyId === recipientKeyId);
@@ -237,13 +267,13 @@ export async function createOwnershipTransferProposalCommand({ groupId, recipien
   return record;
 }
 
-export async function createOwnershipTransferAcceptanceCommand({ proposal, groupId, membershipHeads, identity, records, trustPin }) {
-  const projection = await projectSignedMembership(records, { trustPin, atHeads: membershipHeads });
+export async function createOwnershipTransferAcceptanceCommand({ proposal, groupId, membershipHeads, identity, records, trustPin, verifiedCausalContexts = [] }) {
+  const projection = await projectSignedMembership(records, { trustPin, atHeads: membershipHeads, verifiedCausalContexts });
   if (projection.readOnly || projection.groupId !== groupId || !sameRecord(records, proposal)
       || !projection.ownershipTransfers.some((item) => item.proposalId === proposal.id && !item.acceptanceId)) {
     throw new Error("transfer-proposal-not-authenticated-at-heads");
   }
-  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "member" });
+  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "member", verifiedCausalContexts });
   if (!authority || proposal.payload.recipientParticipantId !== identity.participantId
       || proposal.payload.recipientDeviceId !== identity.deviceId || proposal.payload.recipientKeyId !== identity.keyId) {
     throw new Error("transfer-recipient-key-mismatch");
@@ -255,8 +285,8 @@ export async function createOwnershipTransferAcceptanceCommand({ proposal, group
   return record;
 }
 
-export async function createOwnershipTransferResolutionCommand({ conflictRecordIds, selectedRecordId, groupId, membershipHeads, identity, records, trustPin }) {
-  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "owner" });
+export async function createOwnershipTransferResolutionCommand({ conflictRecordIds, selectedRecordId, groupId, membershipHeads, identity, records, trustPin, verifiedCausalContexts = [] }) {
+  const authority = await resolveMembershipAuthority({ identity, membershipHeads, records, trustPin, role: "owner", verifiedCausalContexts });
   if (!authority || groupId !== authority.projection.groupId) throw new Error("not-owner");
   const sorted = [...conflictRecordIds].sort();
   if (sorted.length !== authority.projection.transferConflictRecordIds.length
@@ -278,4 +308,4 @@ function sameRecord(records, supplied) {
   } catch { return false; }
 }
 
-export { projectSignedMembership as projectMembershipEnrollment };
+export { createVerifiedCausalContext, projectSignedMembership as projectMembershipEnrollment };

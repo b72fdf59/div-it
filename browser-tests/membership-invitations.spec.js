@@ -39,3 +39,27 @@ test("browser enrollment and ownership transfer resolve to the accepted recipien
   assert.equal(result.projection.ownerParticipantId, result.recipientId);
   assert.equal(result.projection.readOnly, false);
 });
+
+test("browser membership removal preserves audit history and locks the removed device", async ({ page }) => {
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const [{ createGroupGenesis }, { getOrCreateDeviceIdentity }, commands] = await Promise.all([
+      import("/src/group-genesis.js"), import("/src/device-identity-store.js"), import("/src/membership-invitations.js")
+    ]);
+    const { record: genesis, trustPin } = await createGroupGenesis({ name: "Trip", currency: "USD", ownerName: "Alice" });
+    const stored = await getOrCreateDeviceIdentity();
+    const owner = { ...stored, participantId: genesis.author.participantId, deviceId: genesis.author.deviceId, keyId: genesis.author.keyId };
+    const context = await commands.createVerifiedCausalContext({ causalRecords: [], membershipRecords: [genesis], trustPin });
+    const removal = await commands.createDeviceRevocationCommand({ participantId: owner.participantId, deviceId: owner.deviceId,
+      keyId: owner.keyId, groupId: genesis.groupId, membershipHeads: [genesis.id], identity: owner, records: [genesis], trustPin, causalContext: context });
+    const records = [genesis, removal];
+    const current = await commands.projectMembershipEnrollment(records, { trustPin, verifiedCausalContexts: [context] });
+    const historical = await commands.projectMembershipEnrollment(records, { trustPin, atHeads: [genesis.id] });
+    return { removal, current, historical, owner };
+  });
+  assert.equal(result.current.devices.some((device) => device.deviceId === result.owner.deviceId), false);
+  assert.equal(result.current.tombstones.devices.length, 1);
+  assert.equal(result.current.tombstones.keyEpoch, 2);
+  assert.equal(result.historical.devices.some((device) => device.deviceId === result.owner.deviceId), true);
+  assert.equal(result.current.readOnly, false);
+});

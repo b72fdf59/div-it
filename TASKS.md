@@ -551,7 +551,7 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
 
 ### DIV-111 — Membership removal and permanent tombstones
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-106, DIV-108, DIV-110
 - Deliverable: Add organizer-signed device-revoked and participant-removed records, commands, permanent tombstones and removal diagnostics to the verified membership graph. Preserve historical state at earlier membership heads for signature verification; expose complete-set tombstones separately for causal ledger cutoffs in the successor task.
 - Acceptance:
@@ -563,9 +563,11 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
   - Future encryption epoch advancement is represented without claiming secret rotation or downloaded-history erasure; relay key distribution follows EPIC-200.
   - Reordered removals/enrollments converge; unit/build and focused browser checks pass. Root reviews before DONE. Full causal ledger revocation and app activation are separate successors.
 
+- Root review (2026-10-09): accepted after ownership-history, proof-binding and malformed legacy-input fixes; 162/162 unit tests and production build pass. DIV-111 focused browser checks: 2/2 pass.
+
 ### DIV-112 — Legacy activation review summary and archive digest
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-101, DIV-103
 - Deliverable: Prepare a detached owner-review summary of legacy prototype group participants, currency and exact projected opening balances, plus RFC 8785/SHA-256 canonical archive digest and explicitly unverified authorship. Preserve source IDs and raw data; produce no membership or ledger writes and no automatic activation.
 - Acceptance:
@@ -575,3 +577,5 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
   - Summary clearly marks legacy authorship unverified; placeholder signatures never become trusted.
   - Preserve original archive bytes when supplied; otherwise expose canonical object archive explicitly without inventing original serialization.
   - Unit/build checks pass; root review before DONE. Participant ID mapping, signed migration attestation and UI activation follow separately.
+
+- Root review (2026-10-09): accepted after ownership-history, proof-binding and malformed legacy-input fixes; 162/162 unit tests and production build pass. DIV-111 focused browser checks: 2/2 pass.
