@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { approveJoinRequestCommand, createDeviceRevocationCommand, createInviteCommand, createJoinRequestCommand,
-  createOwnerDeviceConsentCommand, createOwnershipTransferAcceptanceCommand, createOwnershipTransferProposalCommand,
+  createOwnerDeviceConsentCommand, createOwnershipTransferAcceptanceCommand, createOwnershipTransferProposalCommand, createParticipantRemovalCommand,
   createVerifiedCausalContext } from "./src/membership-invitations.js";
 import { exportDevicePublicKey, generateDeviceSigningKeyPair, signRecord } from "./src/identity-crypto.js";
 import { createSignedLedgerRecord } from "./src/signed-ledger-records.js";
@@ -83,11 +83,14 @@ test("owner creates and verifies a recomputed legacy snapshot without changing s
   const result = await verify(ctx, created.record, created.archive);
   assert.equal(result.ok, true);
   assert.equal(created.record.recordType, "legacy-history-adopted");
+  assert.equal(created.record.membershipSchemaVersion, 1);
+  assert.equal(Object.hasOwn(created.record.payload, "participantMapping"), false);
   assert.deepEqual(created.record.payload.participants.map(({ participantId }) => participantId), ["old-alice", "old-bob"]);
   assert.equal(created.record.payload.legacyAuthorship, "unverified");
   assert.deepEqual(created.archive.bytes, rawBytes);
   assert.deepEqual(ctx.records, recordsBefore, "attestation is not added to the membership graph");
   assert.equal(result.record.signature, created.record.signature);
+  assert.equal(Object.hasOwn(result, "mappedOpeningBalances"), false, "v1 remains audit-only");
 });
 
 test("legacy participant strings are preserved exactly and caller inputs are snapshotted before async verification", async () => {
@@ -179,6 +182,76 @@ test("known owner attestations remain verifiable past a signed future membership
   await assert.rejects(createLegacyHistoryAttestation({ archive, membershipHeads: [ctx.genesis.id], identity: ctx.owner,
     membershipRecords: records, trustPin: ctx.trustPin }), /not-owner|invalid-attestation-context/,
   "authoring still refuses a membership projection marked read-only");
+});
+
+test("v2 maps source participants bijectively to active matching membership participants", async () => {
+  const ctx = await setup();
+  const { member, approval } = await addMember(ctx);
+  const source = legacySource();
+  source.people = [{ id: "old-alice", name: "Alice" }, { id: "old-bob", name: "Bob" }];
+  source.events = [{ id: uuid(), type: "expense-created", description: "Lunch", amount: 1000, payerId: "old-alice",
+    splits: [{ personId: "old-alice", amount: 500 }, { personId: "old-bob", amount: 500 }], createdAt: "2026-10-09T10:00:00.000Z" }];
+  const archive = await reviewArchive(source);
+  const mapping = [
+    { sourceParticipantId: "old-alice", participantId: ctx.owner.participantId },
+    { sourceParticipantId: "old-bob", participantId: member.participantId }
+  ];
+  const created = await create(ctx, archive, ctx.owner, [approval.id], { participantMapping: mapping });
+  assert.equal(created.record.membershipSchemaVersion, 2);
+  assert.deepEqual(created.record.payload.participantMapping, mapping);
+  assert.deepEqual(Object.fromEntries(created.mappedOpeningBalances.map(({ participantId, amount }) => [participantId, amount])), {
+    [ctx.owner.participantId]: 500, [member.participantId]: -500
+  });
+  const verified = await verify(ctx, created.record, created.archive, { membershipRecords: ctx.records });
+  assert.equal(verified.ok, true);
+  assert.deepEqual(verified.mappedOpeningBalances, created.mappedOpeningBalances);
+
+  const invalidMappings = [
+    [mapping[0]],
+    [mapping[0], { ...mapping[1], participantId: mapping[0].participantId }],
+    [mapping[0], { ...mapping[1], participantId: uuid() }],
+    [{ ...mapping[0], participantId: member.participantId }, { ...mapping[1], participantId: ctx.owner.participantId }]
+  ];
+  for (const participantMapping of invalidMappings) {
+    await assert.rejects(create(ctx, archive, ctx.owner, [approval.id], { participantMapping }), /invalid-participant-mapping/);
+  }
+  const reversedInput = await create(ctx, archive, ctx.owner, [approval.id], { participantMapping: [...mapping].reverse() });
+  assert.deepEqual(reversedInput.record.payload.participantMapping, mapping, "the signed mapping is sorted by stable source ID");
+
+  const tampered = structuredClone(created.record);
+  tampered.payload.participantMapping[1].participantId = uuid();
+  tampered.signature = await signRecord(tampered, ctx.owner.privateKey);
+  assert.equal((await verify(ctx, tampered, archive, { membershipRecords: ctx.records })).ok, false);
+});
+
+test("v2 permits empty legacy history with an empty map, but rejects removed targets", async () => {
+  const ctx = await setup();
+  const emptySource = legacySource();
+  emptySource.people = [];
+  const empty = await create(ctx, await reviewArchive(emptySource), ctx.owner, [ctx.genesis.id], { participantMapping: [] });
+  assert.equal(empty.record.membershipSchemaVersion, 2);
+  assert.deepEqual(empty.mappedOpeningBalances, []);
+  assert.equal((await verify(ctx, empty.record, empty.archive)).ok, true);
+
+  const { member, approval } = await addMember(ctx);
+  const causalEvent = await createSignedLedgerRecord({
+    id: uuid(), type: "expense-created", groupId: ctx.groupId,
+    author: { participantId: ctx.owner.participantId, deviceId: ctx.owner.deviceId, keyId: ctx.owner.keyId },
+    createdAt: "2026-10-09T10:02:00.000Z", membershipHeads: [approval.id], causalHeads: [], dependsOn: [],
+    payload: { expenseId: uuid(), description: "Removal proof", currency: "USD", amount: 100, payerId: ctx.owner.participantId,
+      splits: [{ participantId: ctx.owner.participantId, amount: 100 }] }
+  }, ctx.owner.privateKey);
+  const causalContext = await createVerifiedCausalContext({ causalRecords: [causalEvent], membershipRecords: ctx.records, trustPin: ctx.trustPin });
+  const removal = await createParticipantRemovalCommand({ participantId: member.participantId, groupId: ctx.groupId,
+    membershipHeads: [approval.id], identity: ctx.owner, records: ctx.records, trustPin: ctx.trustPin, causalContext });
+  ctx.records.push(removal);
+  const source = legacySource();
+  source.people = [{ id: "old-alice", name: "Alice" }, { id: "old-bob", name: "Bob" }];
+  const archive = await reviewArchive(source);
+  await assert.rejects(create(ctx, archive, ctx.owner, [removal.id], { participantMapping: [
+    { sourceParticipantId: "old-alice", participantId: ctx.owner.participantId },
+    { sourceParticipantId: "old-bob", participantId: member.participantId }
+  ], verifiedCausalContexts: [causalContext] }), /invalid-participant-mapping/);
 });
 
 test("verified causal context is forwarded, and a revoked owner device cannot attest", async () => {

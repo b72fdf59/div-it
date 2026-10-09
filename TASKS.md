@@ -621,3 +621,57 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
   - Unit/build and focused browser checks pass; root review before DONE.
 
 - Root review (2026-10-09): accepted with input snapshots and concrete authority checks; 188/188 unit tests, production build and 3/3 combined focused Firefox browser checks pass.
+
+### DIV-116 — Signed new groups in the real app
+
+- Status: READY
+- Depends on: DIV-103, DIV-109, DIV-113, DIV-115
+- Deliverable: Wire explicit signed group creation, locally pinned genesis, signed participant commands and all existing seven signed financial commands into the Automerge controller and real app. Existing legacy groups remain accessible with prototype projection until explicit migration is implemented.
+- Acceptance:
+  - New group setup collects group name, currency and local owner's name, creates signed genesis using persisted device keys, stores immutable membership/ledger variants and pins genesis only from local explicit creation. Shared document metadata never establishes trust.
+  - New signed groups project actual verified membership and authenticated ledger; unknown/removed devices, unsupported groups and missing local trust cannot write. No unsigned fallback in signed mode.
+  - Expense/revision/void/conflict/settlement/reversal commands preserve existing financial semantics and sign concrete membership and causal heads. Participant addition uses signed organizer authority; setup currency and trusted genesis metadata cannot be silently rewritten through legacy settings.
+  - Async forms await saves before closing/resetting. Group switching and overlapping verification never display stale projections or write signed commands into another group. Recheck the current document/frontiers immediately before committing prepared writes; preserve every stored variant.
+  - IndexedDB reload and two-tab BroadcastChannel convergence retain keys, trust and signed balances. Existing legacy UI stays functional. Signed backup export preserves complete proof records; unsupported restore paths fail before mutation.
+  - Full unit/build, new real-UI browser flows and relevant legacy regression checks pass. Root review before DONE. Legacy migration, joining QR, role/removal UI and relay remain successors.
+
+### DIV-117 — Signed legacy participant mapping
+
+- Status: DONE
+- Depends on: DIV-114, DIV-115
+- Deliverable: Extend standalone legacy attestation APIs with a versioned owner-signed one-to-one mapping from preserved source participant IDs to actual UUID membership IDs, and return exactly mapped opening balances for later atomic activation. Keep unversioned/unmapped attestations verifiable as audit statements only.
+- Acceptance:
+  - Mapped legacy-history-adopted uses membershipSchemaVersion 2, protocolVersion 2, original DIV-114 payload fields plus participantMapping [{sourceParticipantId,participantId}], sorted by source ID. Version 1 retains its exact original unmapped schema and never supplies an activation-ready map.
+  - Mapping covers every reviewed source participant exactly once; UUID targets are unique and active at declared verified membership heads. For nonempty source, exactly one source maps to the signed current owner; source/target names and currency match the reviewed historical roster. Empty source permits an empty mapping with the genesis owner as the new participant.
+  - Signature binds archive digest, original summary and mapping together. Tampered, duplicate, missing, extra, unknown and removed target IDs fail closed; every mapped amount equals its source amount and remains safe integer/zero-sum.
+  - Preserve exact raw archive and stable source IDs; no persistence or ledger insertion. Validation never trusts caller-supplied balances or names. No graph or ledger-file edits in this task.
+  - Full unit/build and focused browser checks pass; root review before DONE. App atomic migration and authenticated legacy opening-balance insertion are separate successors.
+
+- Root review (2026-10-09): mapped attestation accepted; root focused tests 9/9, Luna full suite/build/browser checks pass.
+
+### DIV-118 — Signed causal frontier checkpoints
+
+- Status: DONE
+- Depends on: DIV-108, DIV-111, DIV-113
+- Deliverable: Implement exact ADR-0002 frontier-checkpoint causal records and authenticated staged reduction. Integrate signature/ancestry verification into causal contexts and authenticated ledger graph without financial effects. Membership-kind checkpoints remain a separate successor.
+- Acceptance:
+  - Causal checkpoint uses existing signed membership-style envelope with recordType frontier-checkpoint, membershipSchemaVersion 1, protocolVersion 2, payload {frontierKind: causal}, concrete verified membershipHeads, sorted unique nonempty causalHeads <=64 and dependsOn []. Active enrolled signer at verified heads; no bootstrap callbacks.
+  - Reuse staged planner: first <=64 inputs, subsequent previous checkpoint plus <=63 remaining inputs. Every input is authenticated and present, antichain validated, all original heads remain reachable; no truncation or implicit conflict resolution. More than64 observed ledger heads can form a valid later removal frontier through signed checkpoints.
+  - Checkpoints affect neither money nor roles; missing, forged, cross-group, cyclic or collided checkpoint evidence fails closed. Current removed devices cannot create checkpoints; historical validity is resolved at signed heads and global cutoffs apply to rejected offline checkpoint writes.
+  - Authenticated ledger/context verification recognizes checkpoint ancestry without converting it into a financial event. Unknown future checkpoints retain existing compatibility policy.
+  - Full unit/build and focused browser checks pass; root review before DONE. No app/controller or legacy-module edits in this task.
+
+- Root review (2026-10-09): checkpoint input/current-state authority accepted after creator/verifier alignment; root focused checks 4/4, Luna full suite 195/195, build and Firefox browser check pass.
+
+### DIV-119 — Verified legacy opening balances and staged migration
+
+- Status: READY
+- Depends on: DIV-117
+- Deliverable: Build a detached signed migration plan from explicit reviewed source digest and selected local owner, preserving the original group. Add the exact legacy-activation opening-balance payload and concrete attestation verifier gate; the authenticated ledger must enforce the gate before this task is committed.
+- Acceptance:
+  - Extend opening-balances-imported only for sourceFormat legacy-activation with exact extra field legacyAttestationId (UUID); splitwise-csv retains its existing exact shape. Legacy importId equals the target trusted genesis ID, so repeated legacy baselines cannot contribute twice. Empty legacy source produces no financial event.
+  - Gate consumes concrete [{record,archive}] attestation evidence, verifies mapped schema-2 owner signature, archive digest and mapping with DIV-117, checks target group/currency, current financial-event owner at verified heads, attestation ID and exact mapped balances. No caller permission callbacks, chosen balances or unverified approvals.
+  - Missing evidence is pending; malformed/forged/mismatched evidence is quarantined. Valid duplicates are idempotent; distinct valid same-ID attestation variants fail closed; invalid variants cannot suppress valid evidence. Unmapped schema-1 statements never authorize balances.
+  - Staging snapshots source, recomputes review and matches explicit approved digest before signing. Create genesis, signed roster with fresh target UUIDs, mapped attestation and one signed opening-balance event in memory. Return detached complete document/proof plan plus source fingerprint for a later synchronous stale-source check. No writes, no source mutation and no automatic approval.
+  - Preserve canonical versus original-byte archive labels and exact original source IDs/values. Abort on invalid owner selection, key failure, blocked review, bad mapping or approval mismatch. Reordered evidence never changes balances; fake legacy financial events cannot contribute without verified attestation evidence.
+  - Full unit/build and focused browser checks pass; root review before DONE. Actual controller/UI atomic activation follows separately after DIV-116.

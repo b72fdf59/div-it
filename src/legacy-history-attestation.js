@@ -15,6 +15,7 @@ const CURRENCIES = new Set(["USD", "INR", "EUR", "GBP"]);
 const RECORD_FIELDS = ["id", "recordType", "membershipSchemaVersion", "protocolVersion", "groupId", "author", "createdAt", "membershipHeads", "causalHeads", "dependsOn", "payload", "signature"];
 const AUTHOR_FIELDS = ["participantId", "deviceId", "keyId"];
 const PAYLOAD_FIELDS = ["sourceGroupId", "sourceCanonicalContentDigest", "archiveFormat", "participants", "currency", "openingBalances", "legacyEventCount", "legacyAuthorship"];
+const MAPPED_PAYLOAD_FIELDS = [...PAYLOAD_FIELDS, "participantMapping"];
 const DIGEST_FIELDS = ["algorithm", "encoding", "value"];
 
 function exact(value, fields) {
@@ -63,7 +64,7 @@ function sameCanonical(left, right) {
 function recordError(record) {
   try {
     if (!exact(record, RECORD_FIELDS)) return "invalid-attestation-envelope";
-    if (record.recordType !== RECORD_TYPE || record.membershipSchemaVersion !== 1 || record.protocolVersion !== 2) return "unsupported-attestation-envelope";
+    if (record.recordType !== RECORD_TYPE || ![1, 2].includes(record.membershipSchemaVersion) || record.protocolVersion !== 2) return "unsupported-attestation-envelope";
     if (!isUuid(record.id) || !isUuid(record.groupId) || !exact(record.author, AUTHOR_FIELDS)
         || !AUTHOR_FIELDS.every((field) => isUuid(record.author[field]))) return "invalid-attestation-envelope";
     if (!isTimestamp(record.createdAt) || !validHeads(record.membershipHeads)
@@ -76,8 +77,8 @@ function recordError(record) {
   } catch { return "invalid-attestation-envelope"; }
 }
 
-function payloadError(payload) {
-  if (!exact(payload, PAYLOAD_FIELDS)) return "invalid-attestation-payload";
+function payloadError(payload, mapped = false) {
+  if (!exact(payload, mapped ? MAPPED_PAYLOAD_FIELDS : PAYLOAD_FIELDS)) return "invalid-attestation-payload";
   if (!(payload.sourceGroupId === null || isUuid(payload.sourceGroupId))
       || !exact(payload.sourceCanonicalContentDigest, DIGEST_FIELDS)
       || payload.sourceCanonicalContentDigest.algorithm !== "SHA-256"
@@ -106,6 +107,17 @@ function payloadError(payload) {
     }
     total += balance.amount;
     if (!Number.isSafeInteger(total)) return "invalid-attestation-payload";
+  }
+  if (mapped) {
+    if (!Array.isArray(payload.participantMapping) || payload.participantMapping.length !== payload.participants.length) return "invalid-attestation-payload";
+    const targets = new Set();
+    for (let index = 0; index < payload.participantMapping.length; index += 1) {
+      const mapping = payload.participantMapping[index];
+      if (!exact(mapping, ["sourceParticipantId", "participantId"]) || !participantIds.has(mapping.sourceParticipantId)
+          || !isUuid(mapping.participantId) || (index > 0 && payload.participantMapping[index - 1].sourceParticipantId >= mapping.sourceParticipantId)
+          || targets.has(mapping.participantId)) return "invalid-attestation-payload";
+      targets.add(mapping.participantId);
+    }
   }
   return total === 0 ? null : "invalid-attestation-payload";
 }
@@ -144,8 +156,8 @@ async function reviewArchive(archive) {
   return { source, archiveBytes, archive: snapshot, review };
 }
 
-function payloadFromReview(review) {
-  return {
+function payloadFromReview(review, participantMapping) {
+  const payload = {
     sourceGroupId: review.sourceGroupId,
     sourceCanonicalContentDigest: { ...review.digest },
     archiveFormat: review.archiveFormat,
@@ -155,6 +167,36 @@ function payloadFromReview(review) {
     legacyEventCount: review.legacyEventCount,
     legacyAuthorship: "unverified"
   };
+  if (participantMapping !== undefined) payload.participantMapping = participantMapping.map(({ sourceParticipantId, participantId }) => ({ sourceParticipantId, participantId }));
+  return payload;
+}
+
+function mappedBalances(review, participantMapping, projection) {
+  if (!Array.isArray(participantMapping) || participantMapping.length !== review.participants.length) throw new Error("invalid-participant-mapping");
+  const roster = new Map(projection.participants.map(({ id, name }) => [id, name]));
+  const sourcePeople = new Map(review.participants.map(({ participantId, name }) => [participantId, name]));
+  const seenSources = new Set();
+  const seenTargets = new Set();
+  let ownerMappings = 0;
+  const mapping = [...participantMapping].sort((a, b) => {
+    const left = String(a?.sourceParticipantId); const right = String(b?.sourceParticipantId);
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+  for (const item of mapping) {
+    if (!exact(item, ["sourceParticipantId", "participantId"]) || !sourcePeople.has(item.sourceParticipantId)
+        || !isUuid(item.participantId) || seenSources.has(item.sourceParticipantId) || seenTargets.has(item.participantId)
+        || roster.get(item.participantId) !== sourcePeople.get(item.sourceParticipantId)) throw new Error("invalid-participant-mapping");
+    seenSources.add(item.sourceParticipantId);
+    seenTargets.add(item.participantId);
+    if (item.participantId === projection.ownerParticipantId) ownerMappings += 1;
+  }
+  if (seenSources.size !== sourcePeople.size || (sourcePeople.size && ownerMappings !== 1)
+      || (!sourcePeople.size && mapping.length !== 0) || !projection.participants.some(({ id }) => id === projection.ownerParticipantId)) {
+    throw new Error("invalid-participant-mapping");
+  }
+  const sourceAmounts = new Map(review.openingBalances.map(({ participantId, amount }) => [participantId, amount]));
+  return mapping.map(({ sourceParticipantId, participantId }) => ({ participantId, amount: sourceAmounts.get(sourceParticipantId) }))
+    .sort((a, b) => a.participantId.localeCompare(b.participantId));
 }
 
 function validMembershipHeads(membershipHeads) {
@@ -168,7 +210,7 @@ function copyArchive(archive, data) {
 }
 
 /** Create a signed snapshot statement; it is not inserted into membership or ledger state. */
-export async function createLegacyHistoryAttestation({ archive, membershipHeads, identity, membershipRecords, trustPin,
+export async function createLegacyHistoryAttestation({ archive, membershipHeads, identity, membershipRecords, trustPin, participantMapping,
   verifiedCausalContexts = [] } = {}) {
   validMembershipHeads(membershipHeads);
   if (!Array.isArray(membershipRecords) || !Array.isArray(verifiedCausalContexts)) throw new TypeError("invalid-attestation-context");
@@ -178,6 +220,7 @@ export async function createLegacyHistoryAttestation({ archive, membershipHeads,
   const trustSnapshot = trustPin ? structuredClone(trustPin) : trustPin;
   const headsSnapshot = [...membershipHeads];
   const contextsSnapshot = [...verifiedCausalContexts];
+  const mappingSnapshot = participantMapping === undefined ? undefined : structuredClone(participantMapping);
   const { review, archive: archiveSnapshot } = await reviewArchive(archiveInput);
   if (!identitySnapshot || !AUTHOR_FIELDS.every((field) => isUuid(identitySnapshot[field]))) throw new Error("not-owner");
   let authority;
@@ -187,10 +230,15 @@ export async function createLegacyHistoryAttestation({ archive, membershipHeads,
   } catch { throw new Error("not-owner"); }
   if (!authority) throw new Error("not-owner");
   if (review.currency !== authority.projection.currency) throw new Error("currency-mismatch");
+  const mappedOpeningBalances = mappingSnapshot === undefined ? undefined : mappedBalances(review, mappingSnapshot, authority.projection);
+  const sortedMapping = mappingSnapshot === undefined ? undefined : [...mappingSnapshot].sort((a, b) => {
+    const left = String(a?.sourceParticipantId); const right = String(b?.sourceParticipantId);
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
   const record = {
     id: crypto.randomUUID(),
     recordType: RECORD_TYPE,
-    membershipSchemaVersion: 1,
+    membershipSchemaVersion: sortedMapping === undefined ? 1 : 2,
     protocolVersion: 2,
     groupId: authority.projection.groupId,
     author: Object.fromEntries(AUTHOR_FIELDS.map((field) => [field, identitySnapshot[field]])),
@@ -198,13 +246,13 @@ export async function createLegacyHistoryAttestation({ archive, membershipHeads,
     membershipHeads: headsSnapshot,
     causalHeads: [],
     dependsOn: [],
-    payload: payloadFromReview(review)
+    payload: payloadFromReview(review, sortedMapping)
   };
-  if (payloadError(record.payload)) throw new Error("invalid-attestation-payload");
+  if (payloadError(record.payload, sortedMapping !== undefined)) throw new Error("invalid-attestation-payload");
   record.signature = await signRecord(record, identitySnapshot.privateKey);
   if (recordError(record) || !(await verifyRecord(record, identitySnapshot.publicKey))) throw new Error("attestation-signature-failed");
   if (canonicalJsonBytes(record).byteLength > MAX_RECORD_BYTES) throw new Error("attestation-too-large");
-  return { record, archive: archiveSnapshot, review };
+  return { record, archive: archiveSnapshot, review, ...(mappedOpeningBalances === undefined ? {} : { mappedOpeningBalances }) };
 }
 
 function copyArchiveInput(archive) {
@@ -262,12 +310,19 @@ export async function verifyLegacyHistoryAttestation({ record, archive, membersh
   const authorityProjection = signer.atHeads;
   if (recordSnapshot.author.participantId !== authorityProjection.ownerParticipantId) return { ok: false, reason: "not-owner" };
   if (recordSnapshot.groupId !== authorityProjection.groupId) return { ok: false, reason: "group-mismatch" };
-  if (payloadError(recordSnapshot.payload)) return { ok: false, reason: "invalid-attestation-payload" };
+  const mapped = recordSnapshot.membershipSchemaVersion === 2;
+  if (payloadError(recordSnapshot.payload, mapped)) return { ok: false, reason: "invalid-attestation-payload" };
   if (recordSnapshot.payload.currency !== authorityProjection.currency) return { ok: false, reason: "currency-mismatch" };
   let recomputed;
   try { recomputed = await reviewArchive(archiveSnapshot); }
   catch (error) { return { ok: false, reason: error?.message || "invalid-legacy-archive" }; }
-  const expectedPayload = payloadFromReview(recomputed.review);
+  const expectedPayload = payloadFromReview(recomputed.review, mapped ? recordSnapshot.payload.participantMapping : undefined);
   if (!sameCanonical(recordSnapshot.payload, expectedPayload)) return { ok: false, reason: "attestation-payload-mismatch" };
-  return { ok: true, record: recordSnapshot, archive: recomputed.archive, review: recomputed.review };
+  let openingBalances;
+  if (mapped) {
+    try { openingBalances = mappedBalances(recomputed.review, recordSnapshot.payload.participantMapping, authorityProjection); }
+    catch { return { ok: false, reason: "invalid-participant-mapping" }; }
+  }
+  return { ok: true, record: recordSnapshot, archive: recomputed.archive, review: recomputed.review,
+    ...(mapped ? { mappedOpeningBalances: openingBalances } : {}) };
 }

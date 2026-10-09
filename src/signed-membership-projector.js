@@ -11,6 +11,7 @@ const MAX = 256;
 const verifiedCausalContexts = new WeakMap();
 const TYPES = new Set(["invite-issued", "invite-revoked", "device-join-request", "device-enrollment-approved", "owner-device-enrollment-consented", "membership-conflict-resolved", "ownership-transfer-proposed", "ownership-transfer-accepted", "ownership-transfer-resolved", "device-revoked", "participant-removed"]);
 const BASE = new Set(["group-created", "participant-added", "participant-renamed", "organizer-granted", "organizer-revoked"]);
+const CAUSAL_CHECKPOINTS = new Set(["frontier-checkpoint"]);
 const FIELDS = ["id", "recordType", "membershipSchemaVersion", "protocolVersion", "groupId", "author", "createdAt", "membershipHeads", "causalHeads", "dependsOn", "payload", "signature"];
 const AUTHOR = ["participantId", "deviceId", "keyId"];
 const PAYLOADS = {
@@ -55,11 +56,14 @@ function timestamp(value) {
 }
 function schemaError(record) {
   try {
-    if (!exact(record, FIELDS) || !TYPES.has(record.recordType)) return "invalid-enrollment-schema";
+    if (!exact(record, FIELDS) || (!TYPES.has(record.recordType) && !CAUSAL_CHECKPOINTS.has(record.recordType))) return "invalid-enrollment-schema";
     if (record.membershipSchemaVersion !== 1 || record.protocolVersion !== 2) return "unsupported-membership-version";
     if (!uuid(record.id) || !uuid(record.groupId) || !exact(record.author, AUTHOR) || !AUTHOR.every((field) => uuid(record.author[field]))) return "invalid-enrollment-schema";
     const removal = ["device-revoked", "participant-removed"].includes(record.recordType);
-    const causalHeadsValid = removal
+    const causalHeadsValid = CAUSAL_CHECKPOINTS.has(record.recordType)
+      ? Array.isArray(record.causalHeads) && record.causalHeads.length > 0 && record.causalHeads.length <= 64
+        && record.causalHeads.every((id, i) => uuid(id) && (!i || record.causalHeads[i - 1] < id))
+      : removal
       ? Array.isArray(record.causalHeads) && record.causalHeads.length <= 64
         && record.causalHeads.every((id, i) => uuid(id) && (!i || record.causalHeads[i - 1] < id))
       : Array.isArray(record.causalHeads) && record.causalHeads.length === 0;
@@ -68,6 +72,11 @@ function schemaError(record) {
         || !causalHeadsValid || !Array.isArray(record.dependsOn) || record.dependsOn.length
         || typeof record.signature !== "string" || !SIG.test(record.signature)) return "invalid-enrollment-schema";
     const p = record.payload;
+    if (CAUSAL_CHECKPOINTS.has(record.recordType)) {
+      if (!exact(p, ["frontierKind"]) || p.frontierKind !== "causal") return "invalid-enrollment-payload";
+      if (canonicalJsonBytes(record).byteLength > 8192) return "membership-record-too-large";
+      return null;
+    }
     if (!exact(p, PAYLOADS[record.recordType])) return "invalid-enrollment-payload";
     if (record.recordType === "invite-issued") {
       if (!uuid(p.inviteId) || !uuid(p.participantId) || !/^sha256:[A-Za-z0-9_-]{43}$/.test(p.tokenHash)
@@ -99,6 +108,15 @@ function schemaError(record) {
     if (canonicalJsonBytes(record).byteLength > 8192) return "membership-record-too-large";
     return null;
   } catch { return "invalid-enrollment-schema"; }
+}
+
+export function parseCausalFrontierCheckpoint(raw) {
+  let record;
+  try { record = structuredClone(raw); }
+  catch { return { ok: false, reason: "invalid-enrollment-schema" }; }
+  if (record?.recordType !== "frontier-checkpoint") return { ok: false, reason: "invalid-enrollment-schema" };
+  const reason = schemaError(record);
+  return reason ? { ok: false, reason, record } : { ok: true, record };
 }
 
 function compatibilityEnvelopeError(record) {
@@ -160,7 +178,7 @@ function stable(diagnostics) {
 }
 
 /** Authenticate a caller's observed ledger records and bind their verified causal graph as a removal frontier source. */
-export async function createVerifiedCausalContext({ causalRecords, membershipRecords, trustPin, priorContexts = [], authorizationContexts = [], allowReadOnlyKnownState = false } = {}) {
+export async function createVerifiedCausalContext({ causalRecords, membershipRecords, trustPin, priorContexts = [], authorizationContexts = [], allowReadOnlyKnownState = false, allowLargeFrontier = false } = {}) {
   if (!Array.isArray(causalRecords) || !Array.isArray(membershipRecords) || !trustPin
       || !Array.isArray(priorContexts) || !Array.isArray(authorizationContexts)) {
     throw new TypeError("invalid-causal-context-input");
@@ -185,10 +203,16 @@ export async function createVerifiedCausalContext({ causalRecords, membershipRec
     throw new Error("causal-context-invalid-prior-context");
   }
   const verified = priorContexts.flatMap((context) => verifiedCausalContexts.get(context)?.sourceRecords || []);
+  const verifiedById = new Map(verified.map((record) => [record.id, record]));
   for (const raw of causalRecords) {
     const parsed = parseSignedLedgerRecord(raw);
-    if (!parsed.ok) throw new Error(`causal-context-${parsed.reason}`);
-    const record = parsed.record;
+    let record;
+    if (parsed.ok) record = parsed.record;
+    else {
+      const checkpoint = parseCausalFrontierCheckpoint(raw);
+      if (!checkpoint.ok) throw new Error(`causal-context-${parsed.reason}`);
+      record = checkpoint.record;
+    }
     if (record.groupId !== membership.groupId) throw new Error("causal-context-group-mismatch");
     const atHeads = await projectSignedMembership(membershipRecords, { ...contextOptions, atHeads: record.membershipHeads });
     if (atHeads.groupId !== membership.groupId || (atHeads.readOnly && !allowReadOnlyKnownState)) throw new Error("causal-context-membership-untrusted");
@@ -200,6 +224,23 @@ export async function createVerifiedCausalContext({ causalRecords, membershipRec
     const publicKey = await crypto.subtle.importKey("raw", keyBytes, { name: "Ed25519" }, false, ["verify"]);
     if (!(await verifyRecord(record, publicKey))) throw new Error("causal-context-invalid-signature");
     verified.push(record);
+    verifiedById.set(record.id, record);
+  }
+  for (const raw of causalRecords) {
+    const parsed = parseCausalFrontierCheckpoint(raw);
+    if (!parsed.ok) continue;
+    const checkpoint = parsed.record;
+    for (const inputId of checkpoint.causalHeads) {
+      const input = verifiedById.get(inputId);
+      if (!input) throw new Error("causal-context-missing-checkpoint-input");
+      const atInput = await projectSignedMembership(membershipRecords, { ...contextOptions, atHeads: input.membershipHeads });
+      if (atInput.groupId !== membership.groupId || (!allowReadOnlyKnownState && atInput.readOnly)) {
+        throw new Error("causal-context-checkpoint-input-membership-untrusted");
+      }
+      const signer = atInput.devices.find((item) => item.participantId === checkpoint.author.participantId
+        && item.deviceId === checkpoint.author.deviceId && item.keyId === checkpoint.author.keyId);
+      if (!signer) throw new Error("causal-context-checkpoint-signer-not-active-at-input-heads");
+    }
   }
   const uniqueVerified = [...new Map(verified.map((record) => [canonical(record), record])).values()];
   const graph = analyzeCausalGraph(uniqueVerified, { groupId: membership.groupId });
@@ -207,9 +248,12 @@ export async function createVerifiedCausalContext({ causalRecords, membershipRec
   const invalid = graph.diagnostics.find((item) => item.status !== "valid");
   if (invalid) throw new Error(`causal-context-${invalid.reason}`);
   const frontier = maximalCausalFrontier(graph, graph.nodes.map((node) => node.id));
-  if (!frontier.ok) throw new Error(`causal-context-${frontier.reason}`);
+  if (!frontier.ok && !(allowLargeFrontier && frontier.reason === "causal-frontier-too-large" && Array.isArray(frontier.heads))) {
+    throw new Error(`causal-context-${frontier.reason}`);
+  }
+  const contextFrontier = frontier.ok ? frontier.heads : frontier.heads;
   const context = Object.freeze({ groupId: membership.groupId, genesisId: trustPin.genesisId,
-    publicKeyFingerprint: trustPin.publicKeyFingerprint, frontier: Object.freeze([...frontier.heads]),
+    publicKeyFingerprint: trustPin.publicKeyFingerprint, frontier: Object.freeze([...contextFrontier]),
     sourceRecordIds: Object.freeze(graph.nodes.map((node) => node.id).sort()) });
   verifiedCausalContexts.set(context, { graph, sourceRecords: uniqueVerified,
     genesisId: trustPin.genesisId, publicKeyFingerprint: trustPin.publicKeyFingerprint });
@@ -242,6 +286,7 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
   }
   catch { return empty(rawRecords, [diag("quarantined", "uncloneable-membership-input")], true); }
   const diagnostics = [];
+  const causalCheckpoints = [];
   const variants = new Map();
   const variantKeys = new Map();
   const compatibilityCandidates = new Map();
@@ -264,7 +309,7 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
     keys.add(key); variantKeys.set(id, keys); uniqueVariantCount += 1;
     if (keys.size > 1) {
       collisions.add(id); diagnostics.push(diag("quarantined", "id-content-collision", record, { recordId: id }));
-    } else if (!BASE.has(type) && !TYPES.has(type)) compatibilityCandidates.set(id, record);
+    } else if (!BASE.has(type) && !TYPES.has(type) && !CAUSAL_CHECKPOINTS.has(type)) compatibilityCandidates.set(id, record);
     else {
       variants.set(id, { key, record });
       if (BASE.has(type) && id !== trustPin?.genesisId
@@ -296,7 +341,7 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
   }
   const structural = new Map();
   for (const [id, record] of byId) {
-    if (id === genesisId || !TYPES.has(record.recordType) || errors.has(id)) continue;
+    if (id === genesisId || (!TYPES.has(record.recordType) && !CAUSAL_CHECKPOINTS.has(record.recordType)) || errors.has(id)) continue;
     try {
       const closure = closureFromHeads(record.membershipHeads, byId, groupId, genesisId);
       const list = [...record.membershipHeads];
@@ -712,6 +757,40 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
     }
   }
 
+  for (const record of [...byId.values()].filter((item) => CAUSAL_CHECKPOINTS.has(item.recordType)).sort((a, b) => a.id.localeCompare(b.id))) {
+    if (errors.has(record.id) || collisions.has(record.id)) continue;
+    if (!structural.has(record.id)) {
+      diagnostics.push(diag("quarantined", "invalid-membership-frontier", record));
+      continue;
+    }
+    if (record.membershipHeads.some((head) => !effective.has(head))) {
+      diagnostics.push(diag("pending", "membership-head-not-effective", record));
+      continue;
+    }
+    const state = await baseAt(record.membershipHeads);
+    if (state.error) {
+      diagnostics.push(diag(state.error === "invalid-membership-ancestor" ? "pending" : "quarantined", state.error, record));
+      continue;
+    }
+    const signer = matchingEnrollment(record.author, structural.get(record.id));
+    if (!signer) {
+      diagnostics.push(diag("quarantined", "unknown-device-at-membership-heads", record));
+      continue;
+    }
+    const bytes = unb64(signer.key);
+    let signatureValid = false;
+    try {
+      if (bytes) signatureValid = await verifyRecord(record,
+        await crypto.subtle.importKey("raw", bytes, { name: "Ed25519" }, false, ["verify"]));
+    } catch { /* invalid or unavailable crypto never authenticates a checkpoint */ }
+    if (!signatureValid) {
+      diagnostics.push(diag("quarantined", "invalid-membership-signature", record));
+      continue;
+    }
+    causalCheckpoints.push(record);
+    diagnostics.push(diag("pending", "causal-checkpoint-inputs-require-graph-verification", record));
+  }
+
   for (const [id, record] of [...compatibilityCandidates].sort(([a], [b]) => a.localeCompare(b))) {
     if (collisions.has(id)) continue;
     const envelopeError = compatibilityEnvelopeError(record);
@@ -852,6 +931,7 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
     },
     requests: [...requests.values()].filter((item) => item.membershipHeads.some((head) => finalState.closure.has(head))).map((item) => ({ requestId: item.id, inviteId: item.payload.inviteId, participantId: item.payload.participantId,
       deviceId: item.author.deviceId, keyId: item.author.keyId, publicKey: item.payload.publicKey, status: effective.has(item.id) ? "pending" : "pending" })).sort((a, b) => a.requestId.localeCompare(b.requestId)),
+    causalCheckpointCandidates: causalCheckpoints,
     devices: devices.sort((a, b) => a.deviceId.localeCompare(b.deviceId)),
     heads: allEffectiveHeads,
     diagnostics: stable(diagnostics.concat(finalState.projection.diagnostics)),

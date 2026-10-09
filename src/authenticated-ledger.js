@@ -1,7 +1,7 @@
 import { canonicalJsonBytes, verifyRecord } from "./identity-crypto.js";
 import { projectLedger } from "./ledger.js";
 import { createVerifiedCausalContext, projectSignedMembership } from "./signed-membership-projector.js";
-import { analyzeCausalGraph, causalReachability } from "./causal-graph.js";
+import { analyzeCausalGraph, causalReachability, maximalCausalFrontier } from "./causal-graph.js";
 import { parseSignedLedgerRecord } from "./signed-ledger-records.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -140,11 +140,53 @@ function ledgerContext(events, groupId, currency, allowedViews) {
   });
 }
 
+function checkpointObservedAtAllRemovalFrontiers(record, graph, membership) {
+  const removals = [
+    ...(membership.tombstones?.devices || []).map((item) => ({ ...item, recordType: "device-revoked" })),
+    ...(membership.tombstones?.participants || []).map((item) => ({ ...item, recordType: "participant-removed" }))
+  ].filter((item) => item.recordType === "participant-removed"
+    ? item.participantId === record.author.participantId
+    : item.participantId === record.author.participantId && item.deviceId === record.author.deviceId);
+  return removals.every((removal) => (removal.causalHeads || []).some((head) =>
+    causalReachability(graph, head, record.id).reachable === true));
+}
+
+async function removeUnverifiedCheckpointInputs(sources, membershipRecords, trustPin, contexts) {
+  const graph = analyzeCausalGraph(sources, { groupId: sources[0]?.groupId });
+  if (!graph.ok) return sources;
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const byId = new Map(sources.map((record) => [record.id, record]));
+  const rejected = new Set();
+  for (const checkpoint of sources.filter((record) => record.recordType === "frontier-checkpoint")) {
+    const closure = new Set();
+    const stack = [checkpoint.id];
+    let complete = true;
+    while (stack.length) {
+      const id = stack.pop();
+      if (closure.has(id)) continue;
+      const node = nodes.get(id);
+      if (!node || node.status !== "valid" || !byId.has(id)) { complete = false; break; }
+      closure.add(id);
+      stack.push(...node.parents);
+    }
+    if (!complete) { rejected.add(checkpoint.id); continue; }
+    try {
+      await createVerifiedCausalContext({ causalRecords: [...closure].map((id) => byId.get(id)),
+        membershipRecords, trustPin, authorizationContexts: contexts, allowReadOnlyKnownState: true });
+    } catch { rejected.add(checkpoint.id); }
+  }
+  return sources.filter((record) => !rejected.has(record.id));
+}
+
 async function authenticatedCausalSources(rawRecords, membershipRecords, trustPin, contexts, groupId) {
   const verified = new Map();
   const unsupportedIds = new Set();
   const membershipIds = new Set(membershipRecords.map((record) => record?.id).filter((id) => typeof id === "string"));
   const views = new Map();
+  const membership = await projectSignedMembership(membershipRecords, { trustPin, verifiedCausalContexts: contexts });
+  if (membership.groupId === groupId) {
+    for (const checkpoint of membership.causalCheckpointCandidates || []) verified.set(stableJson(checkpoint), checkpoint);
+  }
   for (const raw of rawRecords) {
     const parsed = parseSignedLedgerRecord(raw);
     // Unknown future record semantics cannot provide causal ancestry.
@@ -174,7 +216,14 @@ async function authenticatedCausalSources(rawRecords, membershipRecords, trustPi
       }
     } catch { /* failed crypto operations cannot contribute causal proof */ }
   }
-  return [...verified.values()].filter((record) => !unsupportedIds.has(record.id));
+  let sources = [...verified.values()].filter((record) => !unsupportedIds.has(record.id));
+  sources = await removeUnverifiedCheckpointInputs(sources, membershipRecords, trustPin, contexts);
+  const graph = analyzeCausalGraph(sources, { groupId });
+  if (graph.ok && sources.some((record) => record.recordType === "frontier-checkpoint")) {
+    sources = sources.filter((record) => record.recordType !== "frontier-checkpoint"
+      || checkpointObservedAtAllRemovalFrontiers(record, graph, membership));
+  }
+  return sources;
 }
 
 async function deriveCausalContexts(rawRecords, membershipRecords, trustPin, groupId) {
@@ -429,8 +478,14 @@ export async function projectAuthenticatedLedger(rawRecords, { membershipRecords
 
   const eventMap = new Map();
   const allowedViews = new Set();
-  const causalRecords = [...causalVariants].filter(([id]) => !causalPoisonIds.has(id))
-    .flatMap(([, variants]) => [...variants.values()]);
+  let causalRecords = [...causalVariants.values()].flatMap((variants) => [...variants.values()])
+    .concat(currentMembership.causalCheckpointCandidates || []).filter((record) => !causalPoisonIds.has(record.id));
+  causalRecords = await removeUnverifiedCheckpointInputs(causalRecords, membershipRecords, trustPin, verifiedCausalContexts);
+  const allCausalGraph = analyzeCausalGraph(causalRecords, { groupId });
+  if (allCausalGraph.ok && causalRecords.some((record) => record.recordType === "frontier-checkpoint")) {
+    causalRecords = causalRecords.filter((record) => record.recordType !== "frontier-checkpoint"
+      || checkpointObservedAtAllRemovalFrontiers(record, allCausalGraph, currentMembership));
+  }
   const causalGraph = analyzeCausalGraph(causalRecords, { groupId });
   const causalNodes = new Map(causalGraph.ok ? causalGraph.nodes.map((node) => [node.id, node]) : []);
   const activeTombstones = [
@@ -488,6 +543,10 @@ export async function projectAuthenticatedLedger(rawRecords, { membershipRecords
   }
 
   const ledger = ledgerContext(eventMap, groupId, currency, allowedViews);
+  const validCausalIds = causalGraph.ok ? causalGraph.nodes.filter((node) => node.status === "valid").map((node) => node.id) : [];
+  const causalFrontierResult = causalGraph.ok
+    ? maximalCausalFrontier(causalGraph, validCausalIds)
+    : { ok: false, reason: causalGraph.reason };
   return {
     ...ledger,
     pending: sortedDiagnostics([...ledger.pending, ...pending]),
@@ -496,6 +555,10 @@ export async function projectAuthenticatedLedger(rawRecords, { membershipRecords
     readOnly: ledger.readOnly || membershipReadOnly || ledgerReadOnly,
     groupId,
     currency,
+    causalFrontier: causalFrontierResult.ok
+      ? { ok: true, heads: [...causalFrontierResult.heads] }
+      : { ...causalFrontierResult, ok: false },
+    verifiedCausalContexts,
     rawRecords: rawRecords.map(cloneRaw),
     membershipDiagnostics: sortedDiagnostics([...membershipDiagnosticsByKey.values()])
   };

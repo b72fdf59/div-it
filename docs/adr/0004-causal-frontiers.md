@@ -1,6 +1,6 @@
 # ADR 0004: Bounded causal graph and frontiers
 
-- Status: Utility contract accepted by root technical review on 2026-10-08; pending root review
+- Status: Utility contract accepted on 2026-10-08; causal checkpoint integration accepted by root on 2026-10-09
 - Scope: Pure causal graph validation for records already authenticated and structurally parsed by their caller
 - Related contracts: [ADR-0001 event format](./0001-event-format.md), [ADR-0003 signed ledger envelope](./0003-signed-ledger-envelope.md)
 
@@ -18,7 +18,11 @@ The graph uses only each record's signed `causalHeads` and `dependsOn` IDs as pa
 
 `planCausalCheckpoints` normalizes a supplied set of at most 10,000 canonical IDs to sorted unique heads. Up to 64 heads need no checkpoint. For larger sets, the caller supplies exactly `1 + ceil((N - 64) / 63)` unique checkpoint IDs, none equal to an input head. The first planned checkpoint has the first 64 original heads in `causalHeads`. Every later checkpoint has the immediately preceding checkpoint ID plus at most 63 additional original heads. Each step has an empty `dependsOn` list; the final frontier is the last checkpoint ID. This staged construction preserves reachability to every original head and every prior checkpoint without changing any underlying conflict.
 
-The later signer integration is expected to represent a checkpoint as a normal signed protocol-v2 envelope with `type: "causal-checkpoint"`, exact payload `{}`, ordinary group/author/membership fields, planned `causalHeads`, and `dependsOn: []`. Each checkpoint ID is assigned before signing and each step is independently verified. For 65 heads this takes two checkpoints; 127 heads take two; 128 heads take three. Checkpoint records do not resolve conflicts, authorize their signer, or erase input records. This ADR only plans their signed parent edges; it does not construct or accept checkpoint signatures.
+The implemented signer integration uses a signed membership-style protocol-v2 envelope with `recordType: "frontier-checkpoint"`, `membershipSchemaVersion: 1`, exact payload `{ "frontierKind": "causal" }`, verified `membershipHeads`, planned `causalHeads`, and `dependsOn: []`. This supersedes the earlier draft financial-envelope `causal-checkpoint` name. Each ID is assigned before signing and every step is independently verified. For 65 heads this takes two checkpoints; 127 heads take two; 128 heads take three. Checkpoint records do not resolve conflicts, confer roles, affect money or erase input records.
+
+`createCausalFrontierCheckpointCommands` authenticates all source records and requires its signer active at the current membership state and at each direct frontier input's declared membership state. Historical ancestors before that signer's enrollment do not independently veto a checkpoint of newer authorized heads. Verification enforces the same input-state rule. Inputs and pins are snapshotted before asynchronous verification. Authenticated projection exposes an actual verified causal frontier; more than 64 heads pauses authoring until signed reduction. Revoked offline checkpoints outside the signed removal frontier never supply valid ancestry. Membership-kind checkpoints are not implemented by this slice.
+
+Root acceptance evidence on 2026-10-09: checkpoint tests 4/4, full suite 195/195, production build and focused Firefox browser check pass.
 
 ## Stable diagnostic names
 
