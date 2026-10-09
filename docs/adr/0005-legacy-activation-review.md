@@ -38,3 +38,15 @@ Legacy authorship is always unverified, including records carrying prototype dev
 ## Evidence
 
 `legacy-activation-review.test.mjs` covers old expense arrays, versioned prototype event arrays, scalar event-store values, mixed mirror/event sources, malformed and unsupported entries, same-ID collisions, raw archive byte preservation/source binding, input immutability, zero-sum balances, malformed group shapes, unlisted opening-balance participants (including net-zero balances), and fixed digest vectors. On 2026-10-09 the focused tests passed 7/7, full `npm test` passed 162/162, and `npm run build` passed. Root review accepted the preparation module; signed activation remains a successor task.
+
+## DIV-114: detached signed history attestation
+
+`createLegacyHistoryAttestation` and `verifyLegacyHistoryAttestation` create and verify a standalone `legacy-history-adopted` signed membership-envelope-shaped record. Creation and verification resolve the actual signer against declared trusted membership heads and require the current owner role. Verification checks the original signed envelope, then recomputes every payload field from the supplied preserved archive. It rejects an owner device removed at the declared heads unless a verified causal context proves the relevant frontier. Inputs are detached before asynchronous work.
+
+This is not activation: the returned record is not appended to membership history or financial projection, and there is no caller authorization callback or UI approval boolean. The signed payload always states `legacyAuthorship: "unverified"`; the source participant IDs and names remain exact. Original archive bytes are preserved when supplied. Otherwise the archive is explicitly marked `canonical-object`, not original serialization.
+
+Bounds: 8 MiB archive bytes, 8 KiB canonical signed record, 256 participants, 10,000 source events, and 64 sorted UUID membership heads. Names and participant IDs are preserved without trimming but must be nonempty after trimming and at most 128 Unicode code points. Supported currencies are USD, INR, EUR, and GBP.
+
+`legacy-history-attestation.test.mjs` covers owner role/transfer/removal, trusted heads, payload and archive recomputation, tampering, exact raw-byte preservation, immutability, whitespace-preserving legacy names/IDs, and continued verification after a signed future membership record makes the current projection read-only. `browser-tests/legacy-history-attestation.spec.js` exercises the native browser crypto path. On 2026-10-09 the focused unit tests passed 7/7, full `npm test` passed 188/188, `npm run build` passed, and the focused browser test passed 1/1 in Chromium. Verification accepts historical records at authenticated declared heads even if a later compatibility barrier makes new authoring read-only; creation remains blocked by the writable-authority resolver.
+
+Root review on 2026-10-09 accepted the standalone attestation API after snapshot and compatibility fixes. The combined focused browser run passed 3/3 in Firefox, including the attestation check. No activation or participant-ID mapping is claimed.

@@ -579,3 +579,45 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
   - Unit/build checks pass; root review before DONE. Participant ID mapping, signed migration attestation and UI activation follow separately.
 
 - Root review (2026-10-09): accepted after ownership-history, proof-binding and malformed legacy-input fixes; 162/162 unit tests and production build pass. DIV-111 focused browser checks: 2/2 pass.
+
+### DIV-113 — Causal removal cutoffs in authenticated ledger projection
+
+- Status: DONE
+- Depends on: DIV-108, DIV-109, DIV-111
+- Deliverable: Integrate concrete verified causal ancestry and complete membership tombstones into projectAuthenticatedLedger. Authenticate removal frontier evidence internally from ledger records; no caller authorization callbacks or unverified ID assertions. Preserve observed pre-removal events and quarantine unseen activity from removed authors.
+- Acceptance:
+  - A removed device's event included in every applicable signed removal frontier remains effective; unseen offline events are quarantined regardless of timestamps or stale membership heads. Participant removal covers every device; unrelated authors remain authorized.
+  - Missing ancestry stays pending and affects no balances; cycles, cross-group ancestry and signed ID collisions fail closed with stable diagnostics. Invalid unsigned variants cannot suppress legitimate events.
+  - Missing removal frontier proof never silently grants removed authors authority. Resolve membership/ledger evidence deterministically across reordered delivery without accepting circular self-authorization.
+  - Complete global tombstones apply even when signer keys are resolved at historical membership heads. Historical originals remain unchanged and auditable. All existing seven financial event types, conflicts and zero-sum semantics remain intact.
+  - Full unit/build and focused browser checks pass; root review before DONE. Signed checkpoints, offline expense adoption and UI activation follow as separate successors.
+
+- Root review (2026-10-09): accepted with input snapshots and concrete authority checks; 188/188 unit tests, production build and 3/3 combined focused Firefox browser checks pass.
+
+### DIV-114 — Owner-signed legacy snapshot attestations
+
+- Status: DONE
+- Depends on: DIV-105, DIV-106, DIV-112
+- Deliverable: Add isolated creation/verification APIs for legacy-history-adopted records using the ADR-0002 canonical attestation payload, actual current owner authority at verified membership heads, and DIV-112 archive review. Recompute summary and digest from preserved source rather than trusting caller-supplied balances or approval fields.
+- Acceptance:
+  - Exact bounded signed envelope and payload include sourceGroupId, sourceCanonicalContentDigest, archiveFormat, participants, currency, openingBalances, legacyEventCount and legacyAuthorship unverified. Preserve stable source participant IDs; signing never rewrites source data or trusts placeholder signatures.
+  - Only the verified active owner device at declared membership heads signs; ordinary members, organizers, unknown or removed devices and forged membership cannot attest. Propagate concrete verified causal contexts for post-removal authorization.
+  - Verification authenticates original signature, group/currency/owner bindings, canonical digest and every reviewed participant/balance/count field against preserved archive. Tampering, malformed archives, mismatched bytes and non-zero-sum balances fail closed.
+  - No automatic activation, ledger writes or persistence. Existing participant-ID mapping into the UUID membership graph and atomic UI activation remain explicit successors; attestation alone cannot affect balances.
+  - Fixed vectors, input immutability and negative regressions pass; full unit/build and focused browser checks pass. Root review before DONE.
+
+- Root review (2026-10-09): accepted with input snapshots and concrete authority checks; 188/188 unit tests, production build and 3/3 combined focused Firefox browser checks pass.
+
+### DIV-115 — Signed participant and organizer commands for app integration
+
+- Status: DONE
+- Depends on: DIV-104, DIV-105, DIV-106, DIV-111
+- Deliverable: Add concrete signed command APIs for existing participant-added, participant-renamed, organizer-granted and organizer-revoked schemas. Reuse the combined membership authority projector and existing validators; these APIs will replace unsigned roster writes in the app successor.
+- Acceptance:
+  - Active organizers add/rename participants; only current owner grants/revokes organizer roles. No caller role assertions. Resolve authority at verified membership heads including transfers and removal contexts.
+  - Exact bounded existing schemas, valid names/UUIDs, active target checks, permanent tombstones and owner-revocation constraints; private key mismatch cannot produce an accepted command.
+  - Returned signed records round-trip through actual combined projection. Historical bytes/records are preserved; no persistence or app activation in this task.
+  - Ordinary members, removed devices, untrusted/forged ancestry, stale transfer authority and removed participant targets are denied. Positive post-removal authority works with verified causal contexts.
+  - Unit/build and focused browser checks pass; root review before DONE.
+
+- Root review (2026-10-09): accepted with input snapshots and concrete authority checks; 188/188 unit tests, production build and 3/3 combined focused Firefox browser checks pass.

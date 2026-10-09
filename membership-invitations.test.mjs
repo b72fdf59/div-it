@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { exportDevicePublicKey, generateDeviceSigningKeyPair, signRecord } from "./src/identity-crypto.js";
 import { approveJoinRequestCommand, createInviteCommand, createJoinRequestCommand, createInviteRevocationCommand, createInviteConflictResolutionCommand, createOwnerDeviceConsentCommand, createOwnershipTransferProposalCommand, createOwnershipTransferAcceptanceCommand, createOwnershipTransferResolutionCommand, createDeviceRevocationCommand, createParticipantRemovalCommand, createVerifiedCausalContext, projectMembershipEnrollment } from "./src/membership-invitations.js";
 import { createSignedLedgerRecord } from "./src/signed-ledger-records.js";
+import { isVerifiedCausalContext } from "./src/signed-membership-projector.js";
 
 function encode(bytes) { let out = ""; for (const byte of bytes) out += String.fromCharCode(byte); return btoa(out).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_"); }
 const uuid = () => crypto.randomUUID();
@@ -45,6 +46,19 @@ test("causal proof contexts cannot cross group or trusted-genesis pins", async (
   await assert.rejects(createVerifiedCausalContext({ causalRecords: [], membershipRecords: ctx.records, trustPin: ctx.trustPin,
     priorContexts: [foreignContext] }), /causal-context-invalid-prior-context/);
   assert.deepEqual(local.frontier, []);
+});
+
+test("causal proof construction snapshots the trusted genesis pin before awaits", async () => {
+  const ctx = await setup();
+  const pin = { ...ctx.trustPin };
+  const pending = createVerifiedCausalContext({ causalRecords: [], membershipRecords: ctx.records, trustPin: pin });
+  pin.genesisId = uuid();
+  pin.publicKeyFingerprint = `sha256:${"A".repeat(43)}`;
+  const context = await pending;
+  assert.equal(context.genesisId, ctx.trustPin.genesisId);
+  assert.equal(context.publicKeyFingerprint, ctx.trustPin.publicKeyFingerprint);
+  assert.equal(isVerifiedCausalContext(context, ctx.genesis.groupId, ctx.trustPin), true);
+  assert.equal(isVerifiedCausalContext(context, ctx.genesis.groupId, pin), false);
 });
 
 async function rosterRecord({ groupId, author, privateKey, head, recordType, payload }) {

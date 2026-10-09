@@ -1,6 +1,7 @@
 import { canonicalJsonBytes, verifyRecord } from "./identity-crypto.js";
 import { projectLedger } from "./ledger.js";
-import { projectSignedMembership } from "./signed-membership-projector.js";
+import { createVerifiedCausalContext, projectSignedMembership } from "./signed-membership-projector.js";
+import { analyzeCausalGraph, causalReachability } from "./causal-graph.js";
 import { parseSignedLedgerRecord } from "./signed-ledger-records.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -10,6 +11,7 @@ const AUTHOR_FIELDS = ["participantId", "deviceId", "keyId"];
 const ENVELOPE_FIELDS = ["id", "type", "schemaVersion", "protocolVersion", "groupId", "author", "createdAt", "membershipHeads", "causalHeads", "dependsOn", "payload", "signature"];
 const MAX_LEDGER_EVENTS = 10_000;
 const MAX_LEDGER_BYTES = 8 * 1024 * 1024;
+const MAX_CAUSAL_CONTEXT_ROUNDS = 256;
 
 function isRecord(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -138,6 +140,93 @@ function ledgerContext(events, groupId, currency, allowedViews) {
   });
 }
 
+async function authenticatedCausalSources(rawRecords, membershipRecords, trustPin, contexts, groupId) {
+  const verified = new Map();
+  const unsupportedIds = new Set();
+  const membershipIds = new Set(membershipRecords.map((record) => record?.id).filter((id) => typeof id === "string"));
+  const views = new Map();
+  for (const raw of rawRecords) {
+    const parsed = parseSignedLedgerRecord(raw);
+    // Unknown future record semantics cannot provide causal ancestry.
+    const unsupported = !parsed.ok && ["unsupported-version", "unsupported-event-type"].includes(parsed.reason) && parsed.record;
+    if ((!parsed.ok && !unsupported) || (unsupported && !validUnsupportedEnvelope(parsed.record))) continue;
+    if (parsed.record.groupId !== groupId || !parsed.record.membershipHeads.every((head) => membershipIds.has(head))) continue;
+    const record = parsed.record;
+    const headsKey = JSON.stringify(record.membershipHeads);
+    if (!views.has(headsKey)) {
+      views.set(headsKey, await projectSignedMembership(membershipRecords, { trustPin, atHeads: record.membershipHeads,
+        verifiedCausalContexts: contexts }));
+    }
+    const membership = views.get(headsKey);
+    // A later unsupported barrier can make the current roster read-only without
+    // invalidating signatures anchored to an earlier, fully verified frontier.
+    if (membership.groupId !== groupId) continue;
+    const participantExists = membership.participants.some((participant) => participant.id === record.author.participantId);
+    const device = membership.devices.find((item) => item.participantId === record.author.participantId
+      && item.deviceId === record.author.deviceId && item.keyId === record.author.keyId);
+    const bytes = device && decodePublicKey(device.publicKey);
+    if (!participantExists || !bytes) continue;
+    try {
+      const publicKey = await crypto.subtle.importKey("raw", bytes, { name: "Ed25519" }, false, ["verify"]);
+      if (await verifyRecord(record, publicKey)) {
+        if (unsupported) unsupportedIds.add(record.id);
+        else verified.set(stableJson(record), record);
+      }
+    } catch { /* failed crypto operations cannot contribute causal proof */ }
+  }
+  return [...verified.values()].filter((record) => !unsupportedIds.has(record.id));
+}
+
+async function deriveCausalContexts(rawRecords, membershipRecords, trustPin, groupId) {
+  let contexts = [];
+  let previousSourceSet = null;
+  const observedSourceSets = new Set();
+  for (let round = 0; round < MAX_CAUSAL_CONTEXT_ROUNDS; round += 1) {
+    const sources = await authenticatedCausalSources(rawRecords, membershipRecords, trustPin, contexts, groupId);
+    const graph = analyzeCausalGraph(sources, { groupId });
+    if (!graph.ok) break;
+    const validIds = new Set(graph.nodes.filter((node) => node.status === "valid").map((node) => node.id));
+    const graphNodes = new Map(graph.nodes.map((node) => [node.id, node]));
+    const validSources = sources.filter((record) => validIds.has(record.id));
+    const sourceSet = validSources.map(stableJson).sort().join("\n");
+    if (sourceSet === previousSourceSet) return contexts;
+    if (observedSourceSets.has(sourceSet)) return [];
+    observedSourceSets.add(sourceSet);
+    previousSourceSet = sourceSet;
+
+    // A removal proves only the ancestry named by its own frontier. Unrelated valid
+    // ledger heads must not turn an otherwise bounded proof into a group lockout.
+    const rebuilt = [];
+    for (const removal of membershipRecords.filter((record) =>
+      ["device-revoked", "participant-removed"].includes(record?.recordType) && record.groupId === groupId)) {
+      const frontier = removal.causalHeads;
+      if (!validUuidList(frontier, { minimum: 1 }) || frontier.some((head) => !validIds.has(head))) continue;
+      const closure = new Set();
+      const stack = [...frontier];
+      let complete = true;
+      while (stack.length) {
+        const id = stack.pop();
+        if (closure.has(id)) continue;
+        if (!validIds.has(id)) { complete = false; break; }
+        closure.add(id);
+        const node = graphNodes.get(id);
+        if (!node) { complete = false; break; }
+        stack.push(...node.parents);
+      }
+      if (!complete) continue;
+      const causalRecords = validSources.filter((record) => closure.has(record.id));
+      try {
+        const context = await createVerifiedCausalContext({ causalRecords,
+          membershipRecords: membershipRecords.filter((item) => item?.id !== removal.id), trustPin,
+          authorizationContexts: contexts, allowReadOnlyKnownState: true });
+        rebuilt.push(context);
+      } catch { /* incomplete or circular authorization remains unproven */ }
+    }
+    contexts = rebuilt;
+  }
+  return [];
+}
+
 /** Project signed v2 ledger records against concrete membership state at each record's heads. */
 export async function projectAuthenticatedLedger(rawRecords, { membershipRecords, trustPin } = {}) {
   if (!Array.isArray(rawRecords) || !Array.isArray(membershipRecords) || !trustPin) {
@@ -145,9 +234,27 @@ export async function projectAuthenticatedLedger(rawRecords, { membershipRecords
   }
   if (ledgerInputTooLarge(rawRecords)) return emptyProjection(rawRecords, [diagnostic("ledger", "ledger-too-large")]);
 
-  let currentMembership;
   try {
-    currentMembership = await projectSignedMembership(membershipRecords, { trustPin });
+    rawRecords = structuredClone(rawRecords);
+    membershipRecords = structuredClone(membershipRecords);
+    trustPin = structuredClone(trustPin);
+  } catch {
+    return emptyProjection(rawRecords, [diagnostic(null, "uncloneable-authenticated-ledger-input")]);
+  }
+
+  let currentMembership;
+  let verifiedCausalContexts;
+  try {
+    const initialMembership = await projectSignedMembership(membershipRecords, { trustPin });
+    if (!initialMembership.groupId || !initialMembership.currency) {
+      return {
+        ...emptyProjection(rawRecords, [diagnostic(null, "untrusted-membership")]),
+        membershipDiagnostics: sortedDiagnostics([...initialMembership.diagnostics]),
+        readOnly: true
+      };
+    }
+    verifiedCausalContexts = await deriveCausalContexts(rawRecords, membershipRecords, trustPin, initialMembership.groupId);
+    currentMembership = await projectSignedMembership(membershipRecords, { trustPin, verifiedCausalContexts });
   } catch {
     return emptyProjection(rawRecords, [diagnostic(null, "membership-crypto-unavailable")]);
   }
@@ -162,8 +269,14 @@ export async function projectAuthenticatedLedger(rawRecords, { membershipRecords
   const groupId = currentMembership.groupId;
   const currency = currentMembership.currency;
   const membershipRecordIds = new Set(membershipRecords.map((record) => record?.id).filter((id) => typeof id === "string"));
+  const unprovenRemovalRecords = membershipRecords.filter((record) =>
+    ["device-revoked", "participant-removed"].includes(record?.recordType)
+    && currentMembership.diagnostics.some((item) => item.recordId === record.id && item.status === "pending"
+      && item.reason === "causal-frontier-unverified"));
   const membershipsAtHeads = new Map();
   const authorizedById = new Map();
+  const causalVariants = new Map();
+  const causalPoisonIds = new Set();
   const membershipDiagnosticsByKey = new Map();
   const pending = [];
   const quarantined = [];
@@ -182,7 +295,7 @@ export async function projectAuthenticatedLedger(rawRecords, { membershipRecords
   const getMembershipAt = async (heads) => {
     const key = JSON.stringify(heads);
     if (!membershipsAtHeads.has(key)) {
-      membershipsAtHeads.set(key, await projectSignedMembership(membershipRecords, { trustPin, atHeads: heads }));
+      membershipsAtHeads.set(key, await projectSignedMembership(membershipRecords, { trustPin, atHeads: heads, verifiedCausalContexts }));
     }
     return membershipsAtHeads.get(key);
   };
@@ -267,7 +380,15 @@ export async function projectAuthenticatedLedger(rawRecords, { membershipRecords
       continue;
     }
 
+    if (!isUnsupported) {
+      const causalKey = stableJson(record);
+      const causalEntries = causalVariants.get(record.id) || new Map();
+      causalEntries.set(causalKey, record);
+      causalVariants.set(record.id, causalEntries);
+    }
+
     if (isUnsupported) {
+      causalPoisonIds.add(record.id);
       ledgerReadOnly = true;
       unsupported.push(diagnostic(record.id, parsed.reason, cloneRaw(raw)));
       const key = stableJson(record);
@@ -292,6 +413,14 @@ export async function projectAuthenticatedLedger(rawRecords, { membershipRecords
       continue;
     }
 
+    const removalProofPending = unprovenRemovalRecords.some((removal) => removal.recordType === "participant-removed"
+      ? removal.payload?.participantId === record.author.participantId
+      : removal.payload?.participantId === record.author.participantId && removal.payload?.deviceId === record.author.deviceId);
+    if (removalProofPending) {
+      pending.push(diagnostic(record.id, "removal-frontier-unverified", cloneRaw(raw)));
+      continue;
+    }
+
     const key = stableJson(record);
     const variants = authorizedById.get(record.id) || new Map();
     variants.set(key, { record, event, raw: cloneRaw(raw), unsupported: false });
@@ -300,6 +429,14 @@ export async function projectAuthenticatedLedger(rawRecords, { membershipRecords
 
   const eventMap = new Map();
   const allowedViews = new Set();
+  const causalRecords = [...causalVariants].filter(([id]) => !causalPoisonIds.has(id))
+    .flatMap(([, variants]) => [...variants.values()]);
+  const causalGraph = analyzeCausalGraph(causalRecords, { groupId });
+  const causalNodes = new Map(causalGraph.ok ? causalGraph.nodes.map((node) => [node.id, node]) : []);
+  const activeTombstones = [
+    ...(currentMembership.tombstones?.devices || []).map((item) => ({ ...item, recordType: "device-revoked" })),
+    ...(currentMembership.tombstones?.participants || []).map((item) => ({ ...item, recordType: "participant-removed" }))
+  ];
   for (const [id, variants] of authorizedById) {
     if (variants.size > 1) {
       for (const variant of variants.values()) quarantined.push(diagnostic(id, "id-content-collision", variant.raw));
@@ -307,6 +444,45 @@ export async function projectAuthenticatedLedger(rawRecords, { membershipRecords
     }
     const variant = variants.values().next().value;
     if (variant.unsupported) continue;
+    const node = causalNodes.get(id);
+    if (!causalGraph.ok || !node || node.status === "invalid") {
+      const reason = !causalGraph.ok ? causalGraph.reason : node?.reason || (node?.status === "pending" ? "missing-causal-parent" : "invalid-causal-ancestry");
+      quarantined.push(diagnostic(id, reason, variant.raw));
+      continue;
+    }
+    if (node.status === "pending" && variant.record.causalHeads.some((head) => causalNodes.get(head)?.status !== "valid")) {
+      pending.push(diagnostic(id, "missing-causal-parent", variant.raw));
+      continue;
+    }
+    let cutoffPending = false;
+    let cutoffRejected = false;
+    for (const tombstone of activeTombstones) {
+      const applies = tombstone.recordType === "participant-removed"
+        ? tombstone.participantId === variant.record.author.participantId
+        : tombstone.participantId === variant.record.author.participantId
+          && tombstone.deviceId === variant.record.author.deviceId;
+      if (!applies) continue;
+      if (node.status !== "valid") {
+        cutoffPending = true;
+        break;
+      }
+      const frontier = tombstone.causalHeads || [];
+      const frontierNodes = frontier.map((head) => causalNodes.get(head));
+      if (frontierNodes.some((headNode) => !headNode || headNode.status !== "valid")) {
+        cutoffPending = true;
+        break;
+      }
+      const observed = frontier.some((head) => causalReachability(causalGraph, head, id).reachable === true);
+      if (!observed) { cutoffRejected = true; break; }
+    }
+    if (cutoffPending) {
+      pending.push(diagnostic(id, "causal-removal-ancestry-pending", variant.raw));
+      continue;
+    }
+    if (cutoffRejected) {
+      quarantined.push(diagnostic(id, "author-revoked-at-causal-frontier", variant.raw));
+      continue;
+    }
     eventMap.set(id, variant.event);
     allowedViews.add(stableJson(variant.event));
   }

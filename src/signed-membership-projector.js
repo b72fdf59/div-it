@@ -160,14 +160,24 @@ function stable(diagnostics) {
 }
 
 /** Authenticate a caller's observed ledger records and bind their verified causal graph as a removal frontier source. */
-export async function createVerifiedCausalContext({ causalRecords, membershipRecords, trustPin, priorContexts = [] } = {}) {
-  if (!Array.isArray(causalRecords) || !Array.isArray(membershipRecords) || !trustPin || !Array.isArray(priorContexts)) {
+export async function createVerifiedCausalContext({ causalRecords, membershipRecords, trustPin, priorContexts = [], authorizationContexts = [], allowReadOnlyKnownState = false } = {}) {
+  if (!Array.isArray(causalRecords) || !Array.isArray(membershipRecords) || !trustPin
+      || !Array.isArray(priorContexts) || !Array.isArray(authorizationContexts)) {
     throw new TypeError("invalid-causal-context-input");
   }
-  const contextOptions = { trustPin, verifiedCausalContexts: priorContexts };
+  try {
+    causalRecords = structuredClone(causalRecords);
+    membershipRecords = structuredClone(membershipRecords);
+    trustPin = structuredClone(trustPin);
+    priorContexts = [...priorContexts];
+    authorizationContexts = [...authorizationContexts];
+  } catch {
+    throw new TypeError("uncloneable-causal-context-input");
+  }
+  const contextOptions = { trustPin, verifiedCausalContexts: [...priorContexts, ...authorizationContexts] };
   const membership = await projectSignedMembership(membershipRecords, contextOptions);
-  if (!membership.groupId || membership.readOnly) throw new Error("causal-context-membership-untrusted");
-  if (priorContexts.some((context) => {
+  if (!membership.groupId || (membership.readOnly && !allowReadOnlyKnownState)) throw new Error("causal-context-membership-untrusted");
+  if ([...priorContexts, ...authorizationContexts].some((context) => {
     const proof = verifiedCausalContexts.get(context);
     return !proof || context.groupId !== membership.groupId || proof.genesisId !== trustPin.genesisId
       || proof.publicKeyFingerprint !== trustPin.publicKeyFingerprint;
@@ -181,7 +191,7 @@ export async function createVerifiedCausalContext({ causalRecords, membershipRec
     const record = parsed.record;
     if (record.groupId !== membership.groupId) throw new Error("causal-context-group-mismatch");
     const atHeads = await projectSignedMembership(membershipRecords, { ...contextOptions, atHeads: record.membershipHeads });
-    if (atHeads.groupId !== membership.groupId || atHeads.readOnly) throw new Error("causal-context-membership-untrusted");
+    if (atHeads.groupId !== membership.groupId || (atHeads.readOnly && !allowReadOnlyKnownState)) throw new Error("causal-context-membership-untrusted");
     const participantExists = atHeads.participants.some((participant) => participant.id === record.author.participantId);
     const device = atHeads.devices.find((item) => item.participantId === record.author.participantId
       && item.deviceId === record.author.deviceId && item.keyId === record.author.keyId);
@@ -223,7 +233,14 @@ function causalContextCovers(contexts, groupId, heads, trustPin) {
 }
 
 export async function projectSignedMembership(input, { trustPin, atHeads, allowConflictHeads = false, verifiedCausalContexts = [] } = {}) {
-  const rawRecords = Array.isArray(input) ? input : [];
+  let rawRecords = Array.isArray(input) ? input : [];
+  try {
+    rawRecords = structuredClone(rawRecords);
+    trustPin = trustPin === undefined ? undefined : structuredClone(trustPin);
+    atHeads = atHeads === undefined ? undefined : structuredClone(atHeads);
+    verifiedCausalContexts = [...verifiedCausalContexts];
+  }
+  catch { return empty(rawRecords, [diag("quarantined", "uncloneable-membership-input")], true); }
   const diagnostics = [];
   const variants = new Map();
   const variantKeys = new Map();
@@ -468,8 +485,6 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
   }
 
   async function verifyOne(record, allowConflictHeads = false) {
-    if (["device-revoked", "participant-removed"].includes(record.recordType)
-        && !causalContextCovers(contexts, groupId, record.causalHeads, trustPin)) return { pending: "causal-frontier-unverified" };
     const state = await baseAt(record.membershipHeads);
     if (state.error === "invalid-membership-ancestor") return { pending: state.error };
     if (state.error) return { error: state.error };
@@ -488,6 +503,20 @@ export async function projectSignedMembership(input, { trustPin, atHeads, allowC
     if (!publicBytes) return { error: "invalid-authorized-public-key" };
     const key = await crypto.subtle.importKey("raw", publicBytes, { name: "Ed25519" }, false, ["verify"]);
     if (!(await verifyRecord(record, key))) return { error: "invalid-signature" };
+    if (record.recordType === "device-revoked") {
+      const target = matchingEnrollment({ participantId: record.payload.participantId, deviceId: record.payload.deviceId,
+        keyId: record.payload.keyId }, state.closure);
+      if (!target) return { error: "device-not-active-at-heads" };
+      if (record.payload.keyEpoch !== state.projection.keyEpoch + 1) return { error: "invalid-key-epoch" };
+    }
+    if (record.recordType === "participant-removed") {
+      if (!state.projection.participants.some((person) => person.id === record.payload.participantId)) {
+        return { error: "participant-not-active-at-heads" };
+      }
+      if (record.payload.keyEpoch !== state.projection.keyEpoch + 1) return { error: "invalid-key-epoch" };
+    }
+    if (["device-revoked", "participant-removed"].includes(record.recordType)
+        && !causalContextCovers(contexts, groupId, record.causalHeads, trustPin)) return { pending: "causal-frontier-unverified" };
     return { state, signer };
   }
 

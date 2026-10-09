@@ -109,6 +109,16 @@ This draft separates confirmed product rules from proposed technical details. Pr
 - Removal takes effect only in membership projections whose verified ancestry contains it. Projecting an earlier `membershipHeads` view preserves then-active devices and owner state, allowing signature verification and historical audit. A removal before or concurrent with a transfer acceptance invalidates that acceptance and retains the prior owner. If acceptance is an ancestor of a later removal, the transfer remains the ownership lineage: a device revocation leaves that participant as owner but may lock administration when no owner device remains; participant removal leaves the owner ID in history while removing the participant and all devices. There is no automatic reversion to a prior owner or co-organizer takeover. Removed devices cannot sign future accepted membership transitions.
 - The removal record's signed causal frontier is exposed in the tombstone set for the ledger cutoff successor. This slice does not yet decide event effectiveness or delete/rewrite source records, distribute encryption keys, erase downloaded history, or adopt quarantined expenses. Existing historical event bytes remain auditable. Future key epoch metadata makes no claim that old data is confidential from a previously authorized participant.
 
+### DIV-113 causal ledger cutoff implementation (root reviewed 2026-10-09)
+
+`projectAuthenticatedLedger` reconstructs removal proof contexts internally from authenticated ledger records. Each proof includes only the named frontier's complete causal ancestry, so unrelated heads do not exceed its 64-head limit. Prior contexts may authorize historical membership states without importing unrelated ledger ancestry. The removal being proved is excluded from that proof's membership input; it cannot supply its own authorization. The bounded reconstruction detects repeated non-stable evidence states and discards unresolved proofs rather than selecting a partial result.
+
+Complete device and participant tombstones apply after resolving each original signer at its historical membership heads. A targeted event must be reachable from every applicable signed removal frontier; otherwise it remains quarantined. Missing graph/frontier evidence stays pending, while signed collisions and invalid ancestry fail closed. Invalid signatures never supply evidence or suppress valid variants. Source records and trust pins are detached before asynchronous verification.
+
+A later authenticated unsupported membership barrier blocks new commands but preserves verification of known historical signatures and removal cutoffs. `allowReadOnlyKnownState` permits only proof construction from known trusted states; command authority still refuses read-only authoring. Unsupported signed ledger variants cannot supply causal evidence and invalidate a same-ID known frontier variant. Checkpoints, rejected-expense adoption and UI activation remain successors.
+
+Acceptance: 188/188 unit tests, production build and combined focused Firefox browser checks 3/3 passed on 2026-10-09.
+
 ### Recommended record shapes and signed envelope
 
 These are concrete proposed fields for review, not approved schema. Membership records use the following envelope; `createdAt` remains display-only.
