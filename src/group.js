@@ -14,6 +14,8 @@ import { projectSignedMembership } from "./signed-membership-projector.js";
 import { projectAuthenticatedLedger } from "./authenticated-ledger.js";
 import { createSignedLedgerRecord } from "./signed-ledger-records.js";
 import { legacyAttestationsFromDocument } from "./legacy-opening-balances.js";
+import { legacyActivationSourceMatches, legacyActivationSourcesEqual, stageLegacyGroupActivation } from "./legacy-group-activation.js";
+import { prepareLegacyActivationReview } from "./legacy-activation-review.js";
 
 const GROUP_ID_KEY = "div-it-group-id";
 const GROUP_REGISTRY_KEY = "div-it-groups";
@@ -23,6 +25,7 @@ const currencies = new Set(["USD", "INR", "EUR", "GBP"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 let controller;
+const stagedActivations = new Map();
 
 export function validatePersonName(name) {
   if (typeof name !== "string" || !name.trim()) throw new Error("Enter a name.");
@@ -302,6 +305,15 @@ export async function openGroup(onSnapshot) {
   let groupId;
   let projectionRevision = 0;
   const persistRegistry = () => localStorage.setItem(GROUP_REGISTRY_KEY, JSON.stringify(registry));
+  const registryMatchesStorage = () => {
+    try { return legacyActivationSourcesEqual(JSON.parse(localStorage.getItem(GROUP_REGISTRY_KEY)), registry); }
+    catch { return false; }
+  };
+  const legacySource = (document) => {
+    const originalDocument = JSON.parse(JSON.stringify(document));
+    return { ...originalDocument, events: eventsFromDocument(document), legacyActivationArchive: {
+      format: "div-it-legacy-activation-source-v1", sourceDocument: originalDocument } };
+  };
   const projectSnapshot = async (doc, documentId) => {
     const snapshot = snapshotGroup(doc, documentId);
     if (!snapshot.signedMode) return snapshot;
@@ -426,6 +438,13 @@ export async function openGroup(onSnapshot) {
     };
   }
 
+  const normalizedProofs = (items) => items.map(({ record, archive }) => ({ record, archive: archive && {
+    kind: archive.kind, mediaType: archive.mediaType,
+    ...(archive.canonicalization ? { canonicalization: archive.canonicalization } : {}),
+    bytes: Array.from(archive.bytes || [])
+  } }));
+  const sameProofs = (left, right) => legacyActivationSourcesEqual(normalizedProofs(left), normalizedProofs(right));
+
   function assertPreparedWriteCurrent(state) {
     if (state.token !== generation || !handle || handle.documentId !== state.documentId) {
       throw new Error("The active group changed while the command was being prepared. Try again.");
@@ -482,6 +501,120 @@ export async function openGroup(onSnapshot) {
     getActiveDocumentId() {
       return handle.documentId;
     },
+    async reviewLegacyActivation() {
+      const sourceGeneration = generation;
+      const sourceDocumentId = handle.documentId;
+      const source = legacySource(handle.doc());
+      if (snapshotGroup(handle.doc(), sourceDocumentId).signedMode) throw new Error("Only an unsigned legacy group can be activated.");
+      const review = await prepareLegacyActivationReview(source);
+      if (generation !== sourceGeneration || handle.documentId !== sourceDocumentId || registry.activeDocumentId !== sourceDocumentId
+          || !legacyActivationSourcesEqual(legacySource(handle.doc()), source)) {
+        throw new Error("The source group changed during review. Review it again.");
+      }
+      return { sourceDocumentId, source, review };
+    },
+    async stageLegacyActivation({ sourceDocumentId, source, approvedDigest, selectedOwnerSourceParticipantId, emptySourceOwnerName } = {}) {
+      if (sourceDocumentId !== handle.documentId || registry.activeDocumentId !== sourceDocumentId) throw new Error("The source group changed. Review it again.");
+      const sourceGeneration = generation;
+      if (!registryMatchesStorage() || snapshotGroup(handle.doc(), sourceDocumentId).signedMode) throw new Error("The source group changed. Review it again.");
+      const plan = await stageLegacyGroupActivation({ source, approvedDigest,
+        selectedOwnerSourceParticipantId, emptySourceOwnerName });
+      if (generation !== sourceGeneration || handle.documentId !== sourceDocumentId || registry.activeDocumentId !== sourceDocumentId
+          || !registryMatchesStorage()
+          || snapshotGroup(handle.doc(), sourceDocumentId).signedMode
+          || !legacyActivationSourceMatches(legacySource(handle.doc()), plan.sourceFingerprint)) throw new Error("The source group changed. Review it again.");
+      const activationId = crypto.randomUUID();
+      stagedActivations.set(activationId, { plan, sourceDocumentId, sourceGeneration });
+      return { activationId, review: plan.review, mapping: plan.proofPlan.participantMapping,
+        balances: plan.proofPlan.mappedOpeningBalances, currency: plan.review.currency,
+        digest: plan.approvedDigest };
+    },
+    async activateLegacyGroup(activationId) {
+      const staged = stagedActivations.get(activationId);
+      if (!staged) throw new Error("This activation review expired. Start again.");
+      const { plan, sourceDocumentId, sourceGeneration } = staged;
+      const assertSourceCurrent = () => {
+        if (stagedActivations.get(activationId) !== staged || generation !== sourceGeneration
+            || handle.documentId !== sourceDocumentId || registry.activeDocumentId !== sourceDocumentId
+            || !registryMatchesStorage()
+            || snapshotGroup(handle.doc(), sourceDocumentId).signedMode
+            || !legacyActivationSourceMatches(legacySource(handle.doc()), plan.sourceFingerprint)) {
+          stagedActivations.delete(activationId);
+          throw new Error("The source group changed during activation. No changes were made.");
+        }
+      };
+      assertSourceCurrent();
+      if (import.meta.env.DEV && new URLSearchParams(location.search).has("testReplica")) {
+        throw new Error("Legacy activation requires durable local storage; it is unavailable in replica-test mode.");
+      }
+      const newHandle = repo.create(plan.document);
+      const newDocumentId = newHandle.documentId;
+      try {
+        await repo.flush([newDocumentId]);
+        const verifierRepo = new Repo({ storage: new IndexedDBStorageAdapter(), network: [] });
+        let persistedDocument;
+        try {
+          const persistedHandle = await verifierRepo.find(newDocumentId);
+          persistedDocument = persistedHandle.doc();
+        } finally { await verifierRepo.shutdown(); }
+        const membershipRecords = recordsFromDocument(persistedDocument, "membershipRecordsById");
+        const ledgerRecords = recordsFromDocument(persistedDocument, "ledgerRecordsById");
+        const membership = await projectSignedMembership(membershipRecords, { trustPin: plan.proofPlan.trustPin });
+        const evidence = legacyAttestationsFromDocument(persistedDocument);
+        const ledger = await projectAuthenticatedLedger(ledgerRecords, { membershipRecords,
+          trustPin: plan.proofPlan.trustPin, legacyAttestations: evidence });
+        const expectedMembership = await projectSignedMembership(plan.proofPlan.membershipRecords, { trustPin: plan.proofPlan.trustPin });
+        const sortPeople = (people) => [...people].map(({ id, name }) => ({ id, name })).sort((a, b) => a.id.localeCompare(b.id));
+        const actualBalances = Object.entries(ledger.balances).sort(([a], [b]) => a.localeCompare(b));
+        const expectedBalances = (plan.proofPlan.ledgerRecords.length
+          ? plan.proofPlan.mappedOpeningBalances.map(({ participantId, amount }) => [participantId, amount]) : []).sort(([a], [b]) => a.localeCompare(b));
+        const failures = [];
+        const check = (failed, code) => { if (failed) failures.push(code); };
+        check(!membership.groupId || membership.readOnly || membership.groupId !== plan.proofPlan.genesis.groupId, "membership");
+        check(persistedDocument.signedGroupVersion !== 1 || persistedDocument.groupId !== plan.proofPlan.genesis.groupId, "document-marker");
+        check(membership.currency !== plan.review.currency || membership.groupName !== plan.proofPlan.genesis.payload.name, "group-settings");
+        check(!legacyActivationSourcesEqual(sortPeople(membership.participants), sortPeople(expectedMembership.participants)), "roster");
+        check(!legacyActivationSourcesEqual([...membership.heads].sort(), [...expectedMembership.heads].sort()), "membership-heads");
+        check(ledger.readOnly || ledger.pending.length || ledger.quarantined.length || ledger.unsupported.length, "ledger-status");
+        check(membershipRecords.length !== plan.proofPlan.membershipRecords.length || !sameRecords(membershipRecords, plan.proofPlan.membershipRecords), "membership-records");
+        check(ledgerRecords.length !== plan.proofPlan.ledgerRecords.length || !sameRecords(ledgerRecords, plan.proofPlan.ledgerRecords), "ledger-records");
+        check(evidence.length !== plan.proofPlan.attestations.length || !sameProofs(evidence, plan.proofPlan.attestations), "proof-archives");
+        check(!legacyActivationSourcesEqual(actualBalances, expectedBalances), "opening-balances");
+        if (failures.length) throw new Error(`The persisted activation failed verification (${failures.join(", ")}).`);
+        assertSourceCurrent();
+        const priorRegistryRaw = localStorage.getItem(GROUP_REGISTRY_KEY);
+        const priorPinsRaw = localStorage.getItem(TRUST_PINS_KEY);
+        const priorRegistry = structuredClone(registry);
+        const nextRegistry = structuredClone(registry);
+        nextRegistry.groups.push({ documentId: newDocumentId, name: membership.groupName });
+        nextRegistry.activeDocumentId = newDocumentId;
+        const priorPin = localTrustPin(newDocumentId);
+        try {
+          storeLocalTrustPin(newDocumentId, plan.proofPlan.trustPin);
+          localStorage.setItem(GROUP_REGISTRY_KEY, JSON.stringify(nextRegistry));
+          registry = nextRegistry;
+          const token = ++generation;
+          if (!await activate(newHandle, token, false)) throw new Error("Could not activate the verified group.");
+        } catch (error) {
+          registry = priorRegistry;
+          try { if (priorRegistryRaw === null) localStorage.removeItem(GROUP_REGISTRY_KEY); else localStorage.setItem(GROUP_REGISTRY_KEY, priorRegistryRaw); } catch {}
+          try {
+            if (priorPin) storeLocalTrustPin(newDocumentId, priorPin);
+            else if (priorPinsRaw === null) localStorage.removeItem(TRUST_PINS_KEY);
+            else localStorage.setItem(TRUST_PINS_KEY, priorPinsRaw);
+          } catch {}
+          const token = ++generation;
+          await activate(await repo.find(sourceDocumentId), token, false);
+          staged.sourceGeneration = generation;
+          throw error;
+        }
+        stagedActivations.delete(activationId);
+        return newDocumentId;
+      } catch (error) {
+        throw error;
+      }
+    },
+    cancelLegacyActivation(activationId) { stagedActivations.delete(activationId); },
     async switchGroup(documentId) {
       if (!registry.groups.some((item) => item.documentId === documentId)) throw new Error("Choose a group in this browser.");
       if (registry.activeDocumentId === documentId && activeListener) return true;

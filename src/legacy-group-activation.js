@@ -47,6 +47,11 @@ export function legacyActivationSourceMatches(source, sourceFingerprint) {
   } catch { return false; }
 }
 
+export function legacyActivationSourcesEqual(left, right) {
+  try { return canonical(left) === canonical(right); }
+  catch { return false; }
+}
+
 /** Build a detached migration plan after an explicit digest and owner selection. No group data is persisted. */
 export async function stageLegacyGroupActivation({ source, rawArchiveBytes, approvedDigest,
   selectedOwnerSourceParticipantId, emptySourceOwnerName } = {}) {

@@ -682,7 +682,7 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
 
 ### DIV-120 — Atomic owner-reviewed legacy group activation
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-116, DIV-119
 - Deliverable: Add the explicit owner review and controller flow that turns a prepared legacy activation plan into a separate signed group. Preserve the source group and make the new group visible only after its document, proofs, and local trust are verified and persisted.
 - Acceptance:
@@ -692,3 +692,19 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
   - Keep trust pins local. Commit the local trust pin and group registry only after the persisted document verifies. If any step fails, restore the prior local pin/registry values, leave the original group unchanged and active, and do not expose a partially initialized group; an unregistered orphan document must remain non-authoritative.
   - A successful activation retains the complete original source document and event data unchanged, creates no writes back into that source group, and switches to the new signed group only after the final local registry commit.
   - Test stale-source rejection, persistence/reload of all signed stores and archive bytes, verification failures, storage/flush rollback, retry after failure, and successful activation. Full unit/build and real browser checks pass; root review before DONE.
+
+- Root acceptance (2026-10-12): exact persisted proof comparison, source/generation guards, local trust/registry rollback and explicit two-step owner review accepted. Full Firefox 51/51, unit 204/204, production build and diff checks pass; failure coverage includes flush, proof corruption, source changes during verification, cancellation, pin/registry failure and retry.
+
+### DIV-121 — App invitations and device enrollment handoff
+
+- Status: READY
+- Depends on: DIV-105, DIV-116, DIV-120
+- Deliverable: Wire existing signed invitation/enrollment APIs into an explicit file handoff between independent browser profiles/devices, with final out-of-band trust confirmation. This is the enrollment substrate for subsequent QR joining and encrypted relay integration; it does not complete EPIC-100 alone.
+- Acceptance:
+  - An active organizer selects an existing participant, issues a single-use invite with the default 24-hour expiry, and deliberately exports its bootstrap and bearer token. Replicated records contain only the token hash; raw tokens never enter shared documents, local registry/pins, normal backups or logs.
+  - The target verifies a bounded bootstrap candidate and creates a device-bound self-signed join request using its own persisted key. Invite possession and request signature establish no enrollment or local trust.
+  - Organizer imports the request, reviews participant/device/key fingerprint, explicitly selects and approves the exact request using the privately supplied token and actual current membership authority. No first-request auto-approval; revoked/consumed invites and conflicting approvals follow existing projector rules. Owner device enrollment requires active owner consent.
+  - Organizer exports refreshed complete signed proof; target verifies exact invite/request/approval/genesis bindings and its own key enrollment before showing group name, group ID and genesis fingerprint for explicit out-of-band confirmation. Only then persist a separate local document and local trust pin, with stale-state guards and registry rollback on failure.
+  - Package formats are versioned and bounded; reject malformed, forged, cross-group, replayed or mismatched packages before mutation. Expiry gates user actions without introducing timestamp-based projection authority. Preserve all signed records and existing legacy proofs; no private signing keys are exported.
+  - Real UI tests in two isolated browser contexts prove distinct keys and complete enrollment, denial before approval/confirmation, safe retry, token absence from persistent shared data and unchanged registry/pins after rejection. Full unit/build/browser regressions pass; root review before DONE.
+  - Document deliberate file exchange and absence of live internet synchronization. QR joining remains a required successor, not deferred beyond first release. Real-device transfer and pilot evidence remain manual release gates.

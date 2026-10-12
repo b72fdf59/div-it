@@ -34,6 +34,16 @@
   let newGroupName = $state("");
   let newOwnerName = $state("");
   let newGroupCurrency = $state("USD");
+  let legacyActivationDialog = $state();
+  let legacyActivationReview = $state.raw(null);
+  let legacyActivationPlan = $state.raw(null);
+  let legacyActivationOwner = $state("");
+  let legacyActivationOwnerName = $state("");
+  let legacyActivationDigest = $state("");
+  let legacyActivationError = $state("");
+  let stagingLegacyActivation = $state(false);
+  let legacyReviewRequest = 0;
+  let legacyStageRequest = 0;
   let projection = $derived(ready ? (group.signedMode ? group.authenticatedProjection : projectGroup(group))
     : { balances: {}, effective: [], pending: [], conflicting: [], quarantined: [], unsupported: [], readOnly: false });
   let conflictReviews = $derived(ready ? expenseConflictReviews(group, projection) : []);
@@ -65,6 +75,8 @@
         if (expenseDialog?.open) expenseDialog.close();
         if (revisionDialog?.open) revisionDialog.close();
         if (createGroupDialog?.open) createGroupDialog.close();
+        if (legacyActivationDialog?.open) legacyActivationDialog.close();
+        discardLegacyPlan();
         activeView = "activity";
         showAudit = false;
         auditFilter = null;
@@ -122,6 +134,65 @@
     } finally {
       switchingGroup = false;
     }
+  }
+
+  async function openLegacyActivation() {
+    const request = ++legacyReviewRequest;
+    const sourceDocumentId = groupController.getActiveDocumentId();
+    try {
+      legacyActivationError = "";
+      legacyActivationPlan = null;
+      legacyActivationOwner = "";
+      legacyActivationOwnerName = group.people[0]?.name || "";
+      legacyActivationDigest = "";
+      const review = await groupController.reviewLegacyActivation();
+      if (request !== legacyReviewRequest || review.sourceDocumentId !== sourceDocumentId
+          || groupController.getActiveDocumentId() !== sourceDocumentId) return;
+      legacyActivationReview = review;
+      legacyActivationDialog.showModal();
+    } catch (cause) { if (request === legacyReviewRequest) statusMessage = cause.message; }
+  }
+
+  async function stageLegacyActivation() {
+    if (stagingLegacyActivation) return;
+    const request = ++legacyStageRequest;
+    const review = legacyActivationReview;
+    stagingLegacyActivation = true;
+    legacyActivationError = "";
+    try {
+      if (legacyActivationDigest !== legacyActivationReview.review.digest?.value) throw new Error("Enter the displayed digest exactly to approve this source snapshot.");
+      legacyActivationPlan = await groupController.stageLegacyActivation({
+        sourceDocumentId: review.sourceDocumentId,
+        source: review.source,
+        approvedDigest: review.review.digest,
+        selectedOwnerSourceParticipantId: review.review.participants.length ? legacyActivationOwner : undefined,
+        emptySourceOwnerName: legacyActivationOwnerName
+      });
+      if (request !== legacyStageRequest || !legacyActivationDialog?.open || legacyActivationReview !== review) {
+        groupController.cancelLegacyActivation(legacyActivationPlan.activationId);
+        legacyActivationPlan = null;
+      }
+    } catch (cause) { if (request === legacyStageRequest && legacyActivationDialog?.open) legacyActivationError = cause.message; }
+    finally { stagingLegacyActivation = false; }
+  }
+
+  async function activateLegacyGroup() {
+    switchingGroup = true;
+    try {
+      await groupController.activateLegacyGroup(legacyActivationPlan.activationId);
+      legacyActivationDialog.close();
+      legacyActivationReview = null;
+      legacyActivationPlan = null;
+      statusMessage = "Verified signed group activated. The original group is preserved.";
+    } catch (cause) { legacyActivationError = cause.message; }
+    finally { switchingGroup = false; }
+  }
+
+  function discardLegacyPlan() {
+    legacyStageRequest++;
+    legacyReviewRequest++;
+    if (legacyActivationPlan?.activationId) groupController.cancelLegacyActivation(legacyActivationPlan.activationId);
+    legacyActivationPlan = null;
   }
 
   async function addPerson(name) {
@@ -355,6 +426,13 @@
     {:else}
       <section aria-labelledby="group-title" class="view">
         <h2 id="group-title">Group</h2>
+        {#if !group.signedMode}
+          <section class="card" aria-label="Activate legacy group">
+            <h3>Activate as a signed group</h3>
+            <p>This creates a separate signed group. The current group and its history remain unchanged.</p>
+            <button type="button" onclick={openLegacyActivation} disabled={switchingGroup}>Review legacy activation</button>
+          </section>
+        {/if}
         <GroupSettings {group} save={saveSettings} disabled={readOnly || group.signedMode} />
         <PeopleCard people={group.people} {addPerson} disabled={readOnly} />
         <section class="card" aria-label="Group backup">
@@ -390,6 +468,60 @@
         </label>
         <button type="submit" disabled={switchingGroup}>Create signed group</button>
       </form>
+    </dialog>
+    <dialog bind:this={legacyActivationDialog} aria-labelledby="legacy-activation-title" onclose={discardLegacyPlan} oncancel={(event) => { if (switchingGroup) event.preventDefault(); }}>
+      <h2 id="legacy-activation-title">Review legacy activation</h2>
+      <form method="dialog"><button class="dialog-close" aria-label="Close" onclick={discardLegacyPlan} disabled={switchingGroup}>Close</button></form>
+      {#if legacyActivationReview}
+        {#if legacyActivationError}<p role="alert">{legacyActivationError}</p>{/if}
+        <p><strong>Legacy history is unverified.</strong> The original events are retained for audit; they cannot prove individual authorship.</p>
+        <p>Source group: {legacyActivationReview.source.name} ({legacyActivationReview.source.groupId || "no group ID"})</p>
+        <p>Currency: {legacyActivationReview.review.currency || "unavailable"}</p>
+        <p>Source digest: <code>{legacyActivationReview.review.digest?.value || "unavailable"}</code></p>
+        <h3>Reviewed opening balances</h3>
+        {#if legacyActivationReview.review.openingBalances.length}
+          <ul>{#each legacyActivationReview.review.openingBalances as item (item.participantId)}
+            <li>{legacyActivationReview.review.participants.find(({ participantId }) => participantId === item.participantId)?.name || item.participantId}: {formatCents(item.amount, legacyActivationReview.review.currency)}</li>
+          {/each}
+          </ul>
+        {:else}<p>No opening balances.</p>{/if}
+        {#if !legacyActivationReview.review.activationReady}
+          <p role="alert">This source cannot be activated: {legacyActivationReview.review.blockers.map(({ reason }) => reason).join(", ")}</p>
+        {:else if !legacyActivationPlan}
+          {#if legacyActivationReview.review.participants.length}
+            <label>Choose the current source owner
+              <select bind:value={legacyActivationOwner} required disabled={stagingLegacyActivation}>
+                <option value="" disabled>Select owner</option>
+                {#each legacyActivationReview.review.participants as person (person.participantId)}
+                  <option value={person.participantId}>{person.name}</option>
+                {/each}
+              </select>
+            </label>
+          {:else}
+            <label>Name for the new owner <input bind:value={legacyActivationOwnerName} required maxlength="128" disabled={stagingLegacyActivation}></label>
+          {/if}
+          <label>Type the source digest to approve <input bind:value={legacyActivationDigest} required autocomplete="off" disabled={stagingLegacyActivation}></label>
+          <button type="button" onclick={stageLegacyActivation} disabled={stagingLegacyActivation || (legacyActivationReview.review.participants.length ? !legacyActivationOwner : !legacyActivationOwnerName.trim())}>Approve digest and review mapping</button>
+        {:else}
+          <h3>Exact participant mapping</h3>
+          {#if legacyActivationPlan.mapping.length}
+            <ul>{#each legacyActivationPlan.mapping as item (item.sourceParticipantId)}
+              <li>{legacyActivationReview.review.participants.find(({ participantId }) => participantId === item.sourceParticipantId)?.name || item.sourceParticipantId} → {item.participantId}</li>
+            {/each}
+            </ul>
+          {:else}<p>No source participants; a new owner is created.</p>{/if}
+          <h3>Opening balances ({legacyActivationPlan.currency})</h3>
+          {#if legacyActivationPlan.balances.length}
+            <ul>{#each legacyActivationPlan.balances as item (item.participantId)}
+              <li>{legacyActivationPlan.mapping.find(({ participantId }) => participantId === item.participantId)?.sourceParticipantId || "Owner"} → {item.participantId}: {formatCents(item.amount, legacyActivationPlan.currency)}</li>
+            {/each}
+            </ul>
+          {:else}<p>No opening balance event will be created.</p>{/if}
+          <p>Digest approved: <code>{legacyActivationPlan.digest.value}</code></p>
+          <button type="button" onclick={activateLegacyGroup} disabled={switchingGroup}>Confirm and activate signed group</button>
+          <button type="button" onclick={discardLegacyPlan} disabled={switchingGroup}>Back to owner review</button>
+        {/if}
+      {/if}
     </dialog>
     <dialog bind:this={revisionDialog} aria-labelledby="revision-title">
       <h2 id="revision-title">Revise expense</h2>
