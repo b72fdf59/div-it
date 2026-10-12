@@ -65,6 +65,35 @@ function appendVariant(document, event) {
   document.eventsById[`${id}:${crypto.randomUUID()}`] = encodeEvent(event);
 }
 
+const SIGNED_RECORD_FIELDS = new Set(["membershipRecordsById", "ledgerRecordsById", "legacyAttestationsById"]);
+
+export function recordsFromDocument(document, field) {
+  if (!SIGNED_RECORD_FIELDS.has(field)) throw new TypeError("invalid-signed-record-store");
+  const records = eventsInField(document, field).map(cloneValue);
+  const unique = new Map();
+  for (const record of records) unique.set(String(canonicalEventContent(record) ?? ""), record);
+  return [...unique.values()].sort((left, right) => String(canonicalEventContent(left) ?? "").localeCompare(String(canonicalEventContent(right) ?? "")));
+}
+
+export function appendStoredRecord(document, field, record) {
+  if (!SIGNED_RECORD_FIELDS.has(field)) throw new TypeError("invalid-signed-record-store");
+  const content = canonicalEventContent(record);
+  const previous = recordsFromDocument(document, field);
+  if (previous.some((item) => canonicalEventContent(item) === content)) return false;
+
+  const roots = getConflicts(document, field);
+  if (!document[field] || typeof document[field] !== "object" || Array.isArray(document[field]) || roots) {
+    document[field] = {};
+    for (const item of previous) {
+      const id = typeof item?.id === "string" ? item.id : "!invalid-record";
+      document[field][`${id}:${crypto.randomUUID()}`] = new ImmutableString(JSON.stringify(item));
+    }
+  }
+  const id = typeof record?.id === "string" ? record.id : "!invalid-record";
+  document[field][`${id}:${crypto.randomUUID()}`] = new ImmutableString(JSON.stringify(record));
+  return true;
+}
+
 export function eventMapFromArray(events) {
   const used = new Set(events.flatMap((event) => typeof event?.id === "string" ? [event.id] : []));
   const entries = [];

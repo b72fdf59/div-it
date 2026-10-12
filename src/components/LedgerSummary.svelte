@@ -1,11 +1,12 @@
 <script>
   import { cents } from "../ledger.js";
 
-  let { transfers, money, personName, balanceMap, people, recordSettlement, disabled = false } = $props();
+  let { transfers, money, personName, balanceMap, people, recordSettlement, disabled = false, signedMode = false } = $props();
   let from = $state("");
   let to = $state("");
   let amount = $state("");
   let error = $state("");
+  let saving = $state(false);
 
   $effect(() => {
     const ids = people.map(({ id }) => id);
@@ -13,13 +14,16 @@
     if (!ids.includes(to) || to === from) to = ids.find((id) => id !== from) || "";
   });
 
-  function submit() {
+  async function submit() {
     try {
-      if (!recordSettlement({ from, to, amount: cents(amount) })) return;
+      saving = true;
+      if (!(await recordSettlement({ from, to, amount: cents(amount) }))) return;
       amount = "";
       error = "";
     } catch (cause) {
       error = cause.message;
+    } finally {
+      saving = false;
     }
   }
 </script>
@@ -31,7 +35,7 @@
         <li>Settlement suggestions are unavailable while the ledger is incomplete.</li>
       {:else if transfers.length}
       {#each transfers as transfer}
-        <li><strong>{personName(transfer.from)}</strong> pays <strong>{personName(transfer.to)}</strong> {money(transfer.amount)} <button type="button" disabled={disabled} onclick={() => recordSettlement(transfer)}>Record suggested payment</button></li>
+        <li><strong>{personName(transfer.from)}</strong> pays <strong>{personName(transfer.to)}</strong> {money(transfer.amount)} <button type="button" disabled={disabled || saving} onclick={async () => { saving = true; try { await recordSettlement(transfer); } finally { saving = false; } }}>Record suggested payment</button></li>
       {/each}
     {:else}
       <li>Everyone is settled.</li>
@@ -42,13 +46,13 @@
 <section class="card" aria-labelledby="record-settlement-title">
   <h3 id="record-settlement-title">Record a manual payment</h3>
   <form onsubmit={(event) => { event.preventDefault(); submit(); }}>
-    <label>Paid by <select bind:value={from} disabled={disabled || people.length < 2}>{#each people as person (person.id)}<option value={person.id}>{person.name}</option>{/each}</select></label>
-    <label>Paid to <select bind:value={to} disabled={disabled || people.length < 2}>{#each people.filter(({ id }) => id !== from) as person (person.id)}<option value={person.id}>{person.name}</option>{/each}</select></label>
-    <label>Amount <input bind:value={amount} inputmode="decimal" min="0.01" step="0.01" disabled={disabled || people.length < 2}></label>
+    <label>Paid by <select bind:value={from} disabled={disabled || saving || people.length < 2}>{#each people as person (person.id)}<option value={person.id}>{person.name}</option>{/each}</select></label>
+    <label>Paid to <select bind:value={to} disabled={disabled || saving || people.length < 2}>{#each people.filter(({ id }) => id !== from) as person (person.id)}<option value={person.id}>{person.name}</option>{/each}</select></label>
+    <label>Amount <input bind:value={amount} inputmode="decimal" min="0.01" step="0.01" disabled={disabled || saving || people.length < 2}></label>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
-    <button type="submit" disabled={disabled || people.length < 2}>Record payment</button>
+    <button type="submit" disabled={disabled || saving || people.length < 2}>{saving ? "Saving…" : "Record payment"}</button>
   </form>
-  <small>Recorded locally with prototype attribution; signatures are not active.</small>
+  {#if signedMode}<small>Settlement changes are signed before they are saved.</small>{:else}<small>Recorded locally with prototype attribution; signatures are not active.</small>{/if}
 </section>
 
 <section class="card" aria-labelledby="everyone-title">

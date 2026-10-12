@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as Automerge from "@automerge/automerge";
 import { auditEntries } from "./src/audit.js";
-import { appendStoredEvent, eventMapFromArray, eventsFromDocument, migrateEventStore, needsEventStoreMigration } from "./src/event-store.js";
+import { appendStoredEvent, appendStoredRecord, eventMapFromArray, eventsFromDocument, migrateEventStore, needsEventStoreMigration, recordsFromDocument } from "./src/event-store.js";
 import { canonicalEventContent } from "./src/ledger.js";
 import { projectGroup } from "./src/prototype-events.js";
 
@@ -68,6 +68,32 @@ function appendReplica(base, events) {
 function initial(events = []) {
   return Automerge.from({ events: [], eventsById: eventMapFromArray(events) });
 }
+
+test("signed membership, ledger, and proof stores preserve same-ID variants across merge and reload", () => {
+  const initial = Automerge.from({ membershipRecordsById: {}, ledgerRecordsById: {}, legacyAttestationsById: {} });
+  const membership = { id: firstId, recordType: "participant-added", payload: { participantId: "alice", name: "Alice" } };
+  const ledger = { id: secondId, type: "expense-created", payload: { description: "Dinner" } };
+  const proof = { id: firstId, record: { id: firstId }, archive: { bytes: { encoding: "base64url-no-padding", value: "AQ" } } };
+  const left = Automerge.change(Automerge.clone(initial), (document) => {
+    appendStoredRecord(document, "membershipRecordsById", membership);
+    appendStoredRecord(document, "ledgerRecordsById", ledger);
+    appendStoredRecord(document, "legacyAttestationsById", proof);
+  });
+  const right = Automerge.change(Automerge.clone(initial), (document) => {
+    appendStoredRecord(document, "membershipRecordsById", { ...membership, payload: { ...membership.payload, name: "Other" } });
+    appendStoredRecord(document, "ledgerRecordsById", { ...ledger, payload: { description: "Other dinner" } });
+    appendStoredRecord(document, "legacyAttestationsById", { ...proof, archive: { bytes: { encoding: "base64url-no-padding", value: "Ag" } } });
+  });
+  const merged = Automerge.merge(left, right);
+  assert.equal(recordsFromDocument(merged, "membershipRecordsById").length, 2);
+  assert.equal(recordsFromDocument(merged, "ledgerRecordsById").length, 2);
+  assert.equal(recordsFromDocument(merged, "legacyAttestationsById").length, 2);
+  const reloaded = Automerge.load(Automerge.save(merged));
+  assert.equal(recordsFromDocument(reloaded, "membershipRecordsById").length, 2);
+  assert.equal(recordsFromDocument(reloaded, "ledgerRecordsById").length, 2);
+  assert.equal(recordsFromDocument(reloaded, "legacyAttestationsById").length, 2);
+  assert.throws(() => recordsFromDocument(reloaded, "eventsById"), /invalid-signed-record-store/);
+});
 
 test("event maps are idempotent, scalar, and retain same-ID collision variants", () => {
   const one = expense(firstId, "First");

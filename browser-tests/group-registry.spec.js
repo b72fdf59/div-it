@@ -47,13 +47,18 @@ test("migrates the prior single-group key and isolates groups across switching a
   assert.deepEqual(await exportBackup(page), original);
 
   await page.getByRole("button", { name: "Create new" }).click();
-  await expect(page.getByRole("heading", { name: "New group" })).toBeVisible();
+  const createDialog = page.getByRole("dialog", { name: "Create signed group" });
+  await createDialog.getByLabel("Name for new group").fill("Second group");
+  await createDialog.getByLabel("Your name").fill("Owner");
+  await createDialog.getByLabel("Currency").selectOption("USD");
+  await createDialog.getByRole("button", { name: "Create signed group" }).click();
+  await expect(page.getByRole("heading", { name: "Second group" })).toBeVisible();
   await addPerson(page, "Cara");
   await addExpense(page, "Second group snack", "5.00");
   const secondId = await page.evaluate(() => JSON.parse(localStorage.getItem("div-it-groups")).activeDocumentId);
   assert.notEqual(secondId, originalId);
 
-  await expect(page.getByRole("heading", { name: "New group" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Second group" })).toBeVisible();
   await page.getByLabel("Current group").selectOption(originalId);
   await expect(page.getByRole("heading", { name: "My group" })).toBeVisible();
   await expect(page.getByRole("listitem").filter({ hasText: "Alice" })).toBeVisible();
@@ -64,7 +69,7 @@ test("migrates the prior single-group key and isolates groups across switching a
   await expect(page.getByRole("heading", { name: "Complete audit history" })).toBeVisible();
   await expect(page.locator(".audit-entry")).toContainText("First group dinner");
   await page.getByLabel("Current group").selectOption(secondId);
-  await expect(page.getByRole("heading", { name: "New group" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Second group" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Complete audit history" })).toHaveCount(0);
   await page.getByRole("button", { name: "Open audit history" }).click();
   await expect(page.locator(".audit-entry")).toContainText("Second group snack");
@@ -80,14 +85,16 @@ test("migrates the prior single-group key and isolates groups across switching a
     select.value = documentId;
     select.dispatchEvent(new Event("change", { bubbles: true }));
   }, secondId);
-  await expect(page.getByRole("heading", { name: "New group" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Second group" })).toBeVisible();
   await page.getByRole("button", { name: "Add expense" }).click();
   await expect(page.getByRole("dialog").getByLabel("Description")).toHaveValue("");
   await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
 
-  await expect(page.getByRole("heading", { name: "New group" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Second group" })).toBeVisible();
+  await page.getByRole("button", { name: "Group", exact: true }).click();
   await expect(page.getByRole("listitem").filter({ hasText: "Cara" })).toBeVisible();
   await expect(page.getByRole("listitem").filter({ hasText: "Alice" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Activity" }).click();
   await expect(page.getByRole("heading", { name: "Recent activity" }).locator("..")).toContainText("Second group snack");
   await expect(page.getByRole("heading", { name: "Recent activity" }).locator("..")).not.toContainText("First group dinner");
   await page.getByRole("button", { name: "Balances" }).click();
@@ -97,7 +104,7 @@ test("migrates the prior single-group key and isolates groups across switching a
 
   await page.reload();
   await expect(page.getByRole("button", { name: "Activity" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "New group" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Second group" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Recent activity" }).locator("..")).toContainText("Second group snack");
   await page.getByLabel("Current group").selectOption(originalId);
   await expect(page.getByRole("heading", { name: "My group" })).toBeVisible();

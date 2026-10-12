@@ -624,7 +624,7 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
 
 ### DIV-116 — Signed new groups in the real app
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-103, DIV-109, DIV-113, DIV-115
 - Deliverable: Wire explicit signed group creation, locally pinned genesis, signed participant commands and all existing seven signed financial commands into the Automerge controller and real app. Existing legacy groups remain accessible with prototype projection until explicit migration is implemented.
 - Acceptance:
@@ -634,6 +634,8 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
   - Async forms await saves before closing/resetting. Group switching and overlapping verification never display stale projections or write signed commands into another group. Recheck the current document/frontiers immediately before committing prepared writes; preserve every stored variant.
   - IndexedDB reload and two-tab BroadcastChannel convergence retain keys, trust and signed balances. Existing legacy UI stays functional. Signed backup export preserves complete proof records; unsupported restore paths fail before mutation.
   - Full unit/build, new real-UI browser flows and relevant legacy regression checks pass. Root review before DONE. Legacy migration, joining QR, role/removal UI and relay remain successors.
+
+- Root acceptance (2026-10-12): reviewed signed write guards, authenticated conflict history and persisted legacy proof gate; current unit tests 204/204, production build, full Firefox browser suite 42/42 and diff checks pass.
 
 ### DIV-117 — Signed legacy participant mapping
 
@@ -665,7 +667,7 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
 
 ### DIV-119 — Verified legacy opening balances and staged migration
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-117
 - Deliverable: Build a detached signed migration plan from explicit reviewed source digest and selected local owner, preserving the original group. Add the exact legacy-activation opening-balance payload and concrete attestation verifier gate; the authenticated ledger must enforce the gate before this task is committed.
 - Acceptance:
@@ -675,3 +677,18 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
   - Staging snapshots source, recomputes review and matches explicit approved digest before signing. Create genesis, signed roster with fresh target UUIDs, mapped attestation and one signed opening-balance event in memory. Return detached complete document/proof plan plus source fingerprint for a later synchronous stale-source check. No writes, no source mutation and no automatic approval.
   - Preserve canonical versus original-byte archive labels and exact original source IDs/values. Abort on invalid owner selection, key failure, blocked review, bad mapping or approval mismatch. Reordered evidence never changes balances; fake legacy financial events cannot contribute without verified attestation evidence.
   - Full unit/build and focused browser checks pass; root review before DONE. Actual controller/UI atomic activation follows separately after DIV-116.
+
+- Root acceptance (2026-10-12): reviewed signed write guards, authenticated conflict history and persisted legacy proof gate; current unit tests 204/204, production build, full Firefox browser suite 42/42 and diff checks pass.
+
+### DIV-120 — Atomic owner-reviewed legacy group activation
+
+- Status: READY
+- Depends on: DIV-116, DIV-119
+- Deliverable: Add the explicit owner review and controller flow that turns a prepared legacy activation plan into a separate signed group. Preserve the source group and make the new group visible only after its document, proofs, and local trust are verified and persisted.
+- Acceptance:
+  - Review UI shows the exact source group, participant mapping, currency, opening balances, digest, and `legacyUnverified` warning. The owner explicitly confirms the displayed digest and selects the source owner; no approval boolean or placeholder signature establishes authority.
+  - Stage through DIV-119 using the current device identity. Immediately before persistence, synchronously recheck the source fingerprint and reject stale or replaced source data without changing the source or local registry.
+  - Create a distinct Automerge document using the complete signed document/proof codec from DIV-119. Persist and flush it, then reload/read it through the normal document path and verify membership, authenticated opening balances, and every preserved proof archive before setting any local trust pin or active registry entry.
+  - Keep trust pins local. Commit the local trust pin and group registry only after the persisted document verifies. If any step fails, restore the prior local pin/registry values, leave the original group unchanged and active, and do not expose a partially initialized group; an unregistered orphan document must remain non-authoritative.
+  - A successful activation retains the complete original source document and event data unchanged, creates no writes back into that source group, and switches to the new signed group only after the final local registry commit.
+  - Test stale-source rejection, persistence/reload of all signed stores and archive bytes, verification failures, storage/flush rollback, retry after failure, and successful activation. Full unit/build and real browser checks pass; root review before DONE.

@@ -5,6 +5,8 @@ import { createInviteCommand, createJoinRequestCommand, approveJoinRequestComman
 import { exportDevicePublicKey, generateDeviceSigningKeyPair, signRecord } from "./src/identity-crypto.js";
 import { createSignedLedgerRecord, parseSignedLedgerRecord } from "./src/signed-ledger-records.js";
 import { projectAuthenticatedLedger } from "./src/authenticated-ledger.js";
+import { createLegacyHistoryAttestation } from "./src/legacy-history-attestation.js";
+import { prepareLegacyActivationReview } from "./src/legacy-activation-review.js";
 
 const uuid = () => crypto.randomUUID();
 const base64url = (bytes) => {
@@ -161,6 +163,88 @@ test("enrolled ordinary member's seven signed event types project deterministica
   assert.deepEqual(reverse.balances, forward.balances);
   assert.deepEqual(reverse.effective.map(({ id }) => id), forward.effective.map(({ id }) => id));
   assert.deepEqual(forward.rawRecords, records, "original signed records remain auditable");
+});
+
+test("authenticatedEvents includes valid expense ancestry and excludes an unauthorized same-branch candidate", async () => {
+  const ctx = await setup();
+  const created = await signEvent(ctx, "expense-created", expensePayload(ctx, { description: "Original" }));
+  const revised = await signEvent(ctx, "expense-revised", { ...created.payload, description: "Accepted revision",
+    supersedesEventId: created.id }, { dependsOn: [created.id] });
+  const stranger = { participantId: ctx.member.participantId, deviceId: uuid(), keyId: uuid(),
+    ...await generateDeviceSigningKeyPair() };
+  const rejectedBranch = await signEvent(ctx, "expense-revised", { ...created.payload, description: "Untrusted branch",
+    supersedesEventId: created.id }, { dependsOn: [created.id], author: {
+      participantId: stranger.participantId, deviceId: stranger.deviceId, keyId: stranger.keyId
+    }, privateKey: stranger.privateKey });
+
+  const result = await project(ctx, [created, revised, rejectedBranch]);
+  assert.deepEqual(result.authenticatedEvents.map(({ id }) => id), [created.id, revised.id].sort());
+  assert.ok(result.authenticatedEvents.some(({ id, payload }) => id === created.id && payload.description === "Original"));
+  assert.ok(result.authenticatedEvents.some(({ id, payload }) => id === revised.id && payload.description === "Accepted revision"));
+  assert.equal(result.authenticatedEvents.some(({ id }) => id === rejectedBranch.id), false);
+  result.authenticatedEvents[0].payload.description = "caller mutation";
+  const reprojected = await project(ctx, [created, revised, rejectedBranch]);
+  assert.notEqual(reprojected.authenticatedEvents[0].payload.description, "caller mutation");
+});
+
+async function mappedLegacyOpening(ctx) {
+  const source = { name: "Prior trip", currency: "USD", groupId: uuid(),
+    people: [{ id: "old-alice", name: "Alice" }, { id: "old-bob", name: "Bob" }],
+    events: [{ id: uuid(), type: "expense-created", description: "Lunch", amount: 1000, payerId: "old-alice",
+      splits: [{ personId: "old-alice", amount: 500 }, { personId: "old-bob", amount: 500 }], createdAt: "2026-10-08T09:00:00.000Z" }] };
+  const archive = (await prepareLegacyActivationReview(source)).archive;
+  const attestation = await createLegacyHistoryAttestation({ archive, membershipHeads: ctx.membershipHeads,
+    identity: ctx.owner, membershipRecords: ctx.records, trustPin: ctx.trustPin,
+    participantMapping: [{ sourceParticipantId: "old-alice", participantId: ctx.owner.participantId },
+      { sourceParticipantId: "old-bob", participantId: ctx.member.participantId }] });
+  const record = await createSignedLedgerRecord({ id: uuid(), type: "opening-balances-imported", groupId: ctx.groupId,
+    author: { participantId: ctx.owner.participantId, deviceId: ctx.owner.deviceId, keyId: ctx.owner.keyId },
+    createdAt: "2026-10-08T10:03:00.000Z", membershipHeads: ctx.membershipHeads, causalHeads: [], dependsOn: [],
+    payload: { importId: ctx.trustPin.genesisId, currency: "USD", sourceFormat: "legacy-activation",
+      legacyAttestationId: attestation.record.id,
+      balances: [{ participantId: ctx.owner.participantId, amount: 500 }, { participantId: ctx.member.participantId, amount: -500 }] } },
+  ctx.owner.privateKey);
+  return { archive, attestation, record };
+}
+
+test("legacy activation opening balances need a verified mapped owner attestation", async () => {
+  const ctx = await setup();
+  const { archive, attestation, record } = await mappedLegacyOpening(ctx);
+  const absent = await project(ctx, [record]);
+  assert.equal(absent.effective.some(({ id }) => id === record.id), false);
+  assert.ok(absent.pending.some(({ id, reason }) => id === record.id && reason === "missing-legacy-attestation"));
+  assert.deepEqual(absent.balances, {});
+  assert.deepEqual(absent.causalFrontier.heads, [], "unverified migration evidence cannot provide causal ancestry");
+
+  const accepted = await project(ctx, [record], { legacyAttestations: [{ record: attestation.record, archive }] });
+  assert.equal(accepted.quarantined.length, 0);
+  assert.equal(accepted.pending.length, 0);
+  assert.ok(accepted.effective.some(({ id }) => id === record.id));
+  assert.deepEqual(accepted.balances, { [ctx.owner.participantId]: 500, [ctx.member.participantId]: -500 });
+  assert.deepEqual(accepted.causalFrontier.heads, [record.id]);
+});
+
+test("invalid legacy evidence cannot add balances or authenticate a removal frontier", async () => {
+  const ctx = await setup();
+  const { archive, attestation, record } = await mappedLegacyOpening(ctx);
+  const removal = await createRemoval(ctx, { recordType: "participant-removed", participantId: ctx.member.participantId,
+    causalRecords: [record] });
+  const membershipRecords = [...ctx.records, removal];
+  const tamperedArchive = structuredClone(archive);
+  tamperedArchive.bytes[0] ^= 1;
+  const rejected = await projectAuthenticatedLedger([record], { membershipRecords, trustPin: ctx.trustPin,
+    legacyAttestations: [{ record: attestation.record, archive: tamperedArchive }] });
+  assert.equal(rejected.effective.some(({ id }) => id === record.id), false);
+  assert.deepEqual(rejected.balances, {});
+  assert.ok(rejected.quarantined.some(({ id, reason }) => id === record.id && reason === "invalid-legacy-attestation"));
+  assert.ok(rejected.membershipDiagnostics.some(({ recordId, reason }) => recordId === removal.id && reason === "causal-frontier-unverified"));
+
+  const accepted = await projectAuthenticatedLedger([record], { membershipRecords, trustPin: ctx.trustPin,
+    legacyAttestations: [{ record: attestation.record, archive }] });
+  assert.ok(accepted.effective.some(({ id }) => id === record.id));
+  assert.deepEqual(accepted.balances, { [ctx.owner.participantId]: 500, [ctx.member.participantId]: -500 });
+  assert.equal(accepted.membershipDiagnostics.some(({ recordId, reason }) => recordId === removal.id
+    && reason === "causal-frontier-unverified"), false, "verified migration evidence can prove a later removal frontier");
 });
 
 test("projection snapshots signed inputs before asynchronous verification", async () => {
@@ -351,6 +435,25 @@ test("unsupported signed ledger versions and unsupported membership fail read-on
   assert.ok(withCutoff.quarantined.some((item) => item.id === unseen.id && item.reason === "author-revoked-at-causal-frontier"));
   await assert.rejects(() => createVerifiedCausalContext({ causalRecords: [known],
     membershipRecords: [...ctx.records, unsupportedMembership], trustPin: ctx.trustPin }));
+});
+
+test("verified historical opening balances survive a later authenticated membership compatibility barrier", async () => {
+  const ctx = await setup();
+  const { archive, attestation, record } = await mappedLegacyOpening(ctx);
+  const unsupportedMembership = {
+    id: uuid(), recordType: "future-membership-record", membershipSchemaVersion: 1, protocolVersion: 2,
+    groupId: ctx.groupId,
+    author: { participantId: ctx.owner.participantId, deviceId: ctx.owner.deviceId, keyId: ctx.owner.keyId },
+    createdAt: "2026-10-08T10:04:00.000Z", membershipHeads: [ctx.approval.id], causalHeads: [], dependsOn: [], payload: { future: true }
+  };
+  unsupportedMembership.signature = await signRecord(unsupportedMembership, ctx.owner.privateKey);
+  const projection = await projectAuthenticatedLedger([record], {
+    membershipRecords: [...ctx.records, unsupportedMembership], trustPin: ctx.trustPin,
+    legacyAttestations: [{ record: attestation.record, archive }]
+  });
+  assert.equal(projection.readOnly, true);
+  assert.ok(projection.effective.some(({ id }) => id === record.id));
+  assert.deepEqual(projection.balances, { [ctx.owner.participantId]: 500, [ctx.member.participantId]: -500 });
 });
 
 test("removal frontiers retain observed writes and reject unseen stale-head writes independent of time", async () => {

@@ -98,6 +98,17 @@ test("rejects non-zero-sum opening balances", () => {
   assert.equal(reasonFor(envelope("opening-balances-imported", payload)), "non-zero-sum");
 });
 
+test("legacy activation opening balances require exactly one attestation reference", () => {
+  const payload = { importId: ids.group, currency: "USD", sourceFormat: "legacy-activation",
+    legacyAttestationId: ids.expense, balances: [{ participantId: "participant-alice", amount: 300 }, { participantId: "participant-bob", amount: -300 }] };
+  assert.equal(parseEvent(envelope("opening-balances-imported", payload)).ok, true);
+  assert.equal(reasonFor(envelope("opening-balances-imported", { ...payload, legacyAttestationId: "bad" })), "invalid-payload");
+  assert.equal(reasonFor(envelope("opening-balances-imported", { ...payload, extra: true })), "invalid-payload");
+  assert.equal(reasonFor(envelope("opening-balances-imported", { ...payload, legacyAttestationId: undefined })), "invalid-payload");
+  assert.equal(parseEvent(envelope("opening-balances-imported", { importId: payload.importId, currency: payload.currency,
+    sourceFormat: "splitwise-csv", balances: payload.balances, legacyAttestationId: payload.legacyAttestationId })).ok, false);
+});
+
 test("does not mutate object input", () => {
   const input = envelope("expense-created", createdPayload);
   const before = structuredClone(input);

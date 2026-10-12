@@ -9,6 +9,7 @@
   let splitType = $state("equal");
   let exactAmounts = $state({});
   let error = $state("");
+  let saving = $state(false);
 
   $effect(() => {
     if (!initialExpense) return;
@@ -34,16 +35,19 @@
     return participantIds.map((personId, index) => ({ personId, amount: Math.floor(amount / participantIds.length) + (index < amount % participantIds.length ? 1 : 0) }));
   }
 
-  function submit() {
+  async function submit() {
     try {
+      saving = true;
       const amount = cents(amountText);
-      if (!addExpense({ description, amount, payerId, splits: splits(amount) })) return;
+      if (!(await addExpense({ description, amount, payerId, splits: splits(amount) }))) return;
       description = "";
       amountText = "";
       exactAmounts = {};
       error = "";
     } catch (cause) {
       error = cause.message;
+    } finally {
+      saving = false;
     }
   }
 </script>
@@ -51,11 +55,11 @@
 <section class="card">
   <h2>{title}</h2>
   <form onsubmit={(event) => { event.preventDefault(); submit(); }}>
-    <label>Description <input bind:value={description} placeholder="Dinner" disabled={disabled}></label>
-    <label>Amount <input bind:value={amountText} inputmode="decimal" min="0.01" step="0.01" disabled={disabled}></label>
+    <label>Description <input bind:value={description} placeholder="Dinner" disabled={disabled || saving}></label>
+    <label>Amount <input bind:value={amountText} inputmode="decimal" min="0.01" step="0.01" disabled={disabled || saving}></label>
     <label>
       Paid by
-      <select bind:value={payerId} disabled={disabled || !people.length}>
+      <select bind:value={payerId} disabled={disabled || saving || !people.length}>
         {#each people as person (person.id)}<option value={person.id}>{person.name}</option>{/each}
       </select>
     </label>
@@ -63,21 +67,21 @@
       <legend>Split with</legend>
       {#if people.length}
         {#each people as person (person.id)}
-          <label><input type="checkbox" value={person.id} bind:group={participantIds} disabled={disabled}> {person.name}</label>
+          <label><input type="checkbox" value={person.id} bind:group={participantIds} disabled={disabled || saving}> {person.name}</label>
         {/each}
       {:else}
         Add people first.
       {/if}
     </fieldset>
-    <label>Split type <select bind:value={splitType} disabled={disabled}><option value="equal">Equal</option><option value="exact">Exact amounts</option></select></label>
+    <label>Split type <select bind:value={splitType} disabled={disabled || saving}><option value="equal">Equal</option><option value="exact">Exact amounts</option></select></label>
     {#if splitType === "exact"}
       <div class="exact-splits">
         {#each people.filter((person) => participantIds.includes(person.id)) as person (person.id)}
-          <label>{person.name}<input bind:value={exactAmounts[person.id]} inputmode="decimal" min="0.01" step="0.01" disabled={disabled}></label>
+          <label>{person.name}<input bind:value={exactAmounts[person.id]} inputmode="decimal" min="0.01" step="0.01" disabled={disabled || saving}></label>
         {/each}
       </div>
     {/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}
-    <button type="submit" disabled={disabled || !people.length}>{people.length ? submitLabel : "Add people first"}</button>
+    <button type="submit" disabled={disabled || saving || !people.length}>{saving ? "Saving…" : people.length ? submitLabel : "Add people first"}</button>
   </form>
 </section>

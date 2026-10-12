@@ -138,9 +138,13 @@ function validatePayload(event) {
     return event.dependsOn.includes(payload.reversesEventId) ? null : failure("invalid-reference");
   }
   if (event.type === "opening-balances-imported") {
-    if (!hasExactFields(payload, ["importId", "currency", "sourceFormat", "balances"])) return failure("invalid-payload");
+    const legacy = payload.sourceFormat === "legacy-activation";
+    if (!hasExactFields(payload, legacy
+      ? ["importId", "currency", "sourceFormat", "balances", "legacyAttestationId"]
+      : ["importId", "currency", "sourceFormat", "balances"])) return failure("invalid-payload");
     if (!isUuid(payload.importId)) return failure("invalid-id");
-    if (!CURRENCY.test(payload.currency) || payload.sourceFormat !== "splitwise-csv" || !Array.isArray(payload.balances) || payload.balances.length === 0) return failure("invalid-payload");
+    if (!CURRENCY.test(payload.currency) || !["splitwise-csv", "legacy-activation"].includes(payload.sourceFormat)
+        || (legacy && !isUuid(payload.legacyAttestationId)) || !Array.isArray(payload.balances) || payload.balances.length === 0) return failure("invalid-payload");
     if (payload.balances.length > MAX_COLLECTION_ENTRIES) return failure("event-too-large");
     const participants = new Set();
     let total = 0n;

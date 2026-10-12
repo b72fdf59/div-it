@@ -3,6 +3,7 @@ import { projectLedger } from "./ledger.js";
 import { createVerifiedCausalContext, projectSignedMembership } from "./signed-membership-projector.js";
 import { analyzeCausalGraph, causalReachability, maximalCausalFrontier } from "./causal-graph.js";
 import { parseSignedLedgerRecord } from "./signed-ledger-records.js";
+import { verifyLegacyOpeningBalanceImport } from "./legacy-opening-balances.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const BASE64URL_KEY = /^[A-Za-z0-9_-]{43}$/;
@@ -115,6 +116,7 @@ function emptyProjection(rawRecords, diagnostics = [], readOnly = true) {
     groupId: null,
     currency: null,
     balances: {},
+    authenticatedEvents: [],
     effective: [],
     pending: [],
     conflicting: [],
@@ -178,7 +180,7 @@ async function removeUnverifiedCheckpointInputs(sources, membershipRecords, trus
   return sources.filter((record) => !rejected.has(record.id));
 }
 
-async function authenticatedCausalSources(rawRecords, membershipRecords, trustPin, contexts, groupId) {
+async function authenticatedCausalSources(rawRecords, membershipRecords, trustPin, contexts, groupId, legacyAttestations) {
   const verified = new Map();
   const unsupportedIds = new Set();
   const membershipIds = new Set(membershipRecords.map((record) => record?.id).filter((id) => typeof id === "string"));
@@ -211,6 +213,11 @@ async function authenticatedCausalSources(rawRecords, membershipRecords, trustPi
     try {
       const publicKey = await crypto.subtle.importKey("raw", bytes, { name: "Ed25519" }, false, ["verify"]);
       if (await verifyRecord(record, publicKey)) {
+        if (!unsupported) {
+          const legacy = await verifyLegacyOpeningBalanceImport(record, { legacyAttestations, membershipRecords, trustPin,
+            verifiedCausalContexts: contexts });
+          if (legacy.status !== "not-applicable" && legacy.status !== "authorized") continue;
+        }
         if (unsupported) unsupportedIds.add(record.id);
         else verified.set(stableJson(record), record);
       }
@@ -226,12 +233,12 @@ async function authenticatedCausalSources(rawRecords, membershipRecords, trustPi
   return sources;
 }
 
-async function deriveCausalContexts(rawRecords, membershipRecords, trustPin, groupId) {
+async function deriveCausalContexts(rawRecords, membershipRecords, trustPin, groupId, legacyAttestations) {
   let contexts = [];
   let previousSourceSet = null;
   const observedSourceSets = new Set();
   for (let round = 0; round < MAX_CAUSAL_CONTEXT_ROUNDS; round += 1) {
-    const sources = await authenticatedCausalSources(rawRecords, membershipRecords, trustPin, contexts, groupId);
+    const sources = await authenticatedCausalSources(rawRecords, membershipRecords, trustPin, contexts, groupId, legacyAttestations);
     const graph = analyzeCausalGraph(sources, { groupId });
     if (!graph.ok) break;
     const validIds = new Set(graph.nodes.filter((node) => node.status === "valid").map((node) => node.id));
@@ -277,7 +284,7 @@ async function deriveCausalContexts(rawRecords, membershipRecords, trustPin, gro
 }
 
 /** Project signed v2 ledger records against concrete membership state at each record's heads. */
-export async function projectAuthenticatedLedger(rawRecords, { membershipRecords, trustPin } = {}) {
+export async function projectAuthenticatedLedger(rawRecords, { membershipRecords, trustPin, legacyAttestations = [] } = {}) {
   if (!Array.isArray(rawRecords) || !Array.isArray(membershipRecords) || !trustPin) {
     return emptyProjection(Array.isArray(rawRecords) ? rawRecords : [], [diagnostic(null, "invalid-authenticated-ledger-input")]);
   }
@@ -287,6 +294,7 @@ export async function projectAuthenticatedLedger(rawRecords, { membershipRecords
     rawRecords = structuredClone(rawRecords);
     membershipRecords = structuredClone(membershipRecords);
     trustPin = structuredClone(trustPin);
+    legacyAttestations = structuredClone(legacyAttestations);
   } catch {
     return emptyProjection(rawRecords, [diagnostic(null, "uncloneable-authenticated-ledger-input")]);
   }
@@ -302,7 +310,7 @@ export async function projectAuthenticatedLedger(rawRecords, { membershipRecords
         readOnly: true
       };
     }
-    verifiedCausalContexts = await deriveCausalContexts(rawRecords, membershipRecords, trustPin, initialMembership.groupId);
+    verifiedCausalContexts = await deriveCausalContexts(rawRecords, membershipRecords, trustPin, initialMembership.groupId, legacyAttestations);
     currentMembership = await projectSignedMembership(membershipRecords, { trustPin, verifiedCausalContexts });
   } catch {
     return emptyProjection(rawRecords, [diagnostic(null, "membership-crypto-unavailable")]);
@@ -430,6 +438,19 @@ export async function projectAuthenticatedLedger(rawRecords, { membershipRecords
     }
 
     if (!isUnsupported) {
+      const legacy = await verifyLegacyOpeningBalanceImport(record, { legacyAttestations, membershipRecords, trustPin,
+        verifiedCausalContexts });
+      if (legacy.status === "pending") {
+        pending.push(diagnostic(record.id, legacy.reason || "legacy-attestation-pending", cloneRaw(raw)));
+        continue;
+      }
+      if (legacy.status === "quarantined") {
+        quarantined.push(diagnostic(record.id, legacy.reason || "invalid-legacy-attestation", cloneRaw(raw)));
+        continue;
+      }
+    }
+
+    if (!isUnsupported) {
       const causalKey = stableJson(record);
       const causalEntries = causalVariants.get(record.id) || new Map();
       causalEntries.set(causalKey, record);
@@ -549,6 +570,9 @@ export async function projectAuthenticatedLedger(rawRecords, { membershipRecords
     : { ok: false, reason: causalGraph.reason };
   return {
     ...ledger,
+    // This detached, ID-sorted set contains every event admitted by the complete
+    // authentication/cutoff pipeline, including valid superseded ancestors.
+    authenticatedEvents: [...eventMap.values()].sort((left, right) => left.id.localeCompare(right.id)).map(cloneRaw),
     pending: sortedDiagnostics([...ledger.pending, ...pending]),
     quarantined: sortedDiagnostics([...ledger.quarantined, ...quarantined]),
     unsupported: sortedDiagnostics([...ledger.unsupported, ...unsupported]),

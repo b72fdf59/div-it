@@ -30,7 +30,12 @@
   let groupController;
   let expenseDialog = $state();
   let revisionDialog = $state();
-  let projection = $derived(ready ? projectGroup(group) : { balances: {}, effective: [], pending: [], conflicting: [], quarantined: [], unsupported: [], readOnly: false });
+  let createGroupDialog = $state();
+  let newGroupName = $state("");
+  let newOwnerName = $state("");
+  let newGroupCurrency = $state("USD");
+  let projection = $derived(ready ? (group.signedMode ? group.authenticatedProjection : projectGroup(group))
+    : { balances: {}, effective: [], pending: [], conflicting: [], quarantined: [], unsupported: [], readOnly: false });
   let conflictReviews = $derived(ready ? expenseConflictReviews(group, projection) : []);
   let auditItems = $derived(ready ? auditEntries(group, projection, auditFilter) : []);
   let readOnly = $derived(projection.readOnly || group.groupIdentityIssue);
@@ -59,6 +64,7 @@
       if (activeDocumentId && registryState.activeDocumentId !== activeDocumentId) {
         if (expenseDialog?.open) expenseDialog.close();
         if (revisionDialog?.open) revisionDialog.close();
+        if (createGroupDialog?.open) createGroupDialog.close();
         activeView = "activity";
         showAudit = false;
         auditFilter = null;
@@ -82,20 +88,35 @@
   async function switchGroup(event) {
     selectedGroupId = event.currentTarget.value;
     switchingGroup = true;
+    ready = false;
     try {
       await groupController.switchGroup(selectedGroupId);
     } catch (cause) {
       statusMessage = cause.message;
       selectedGroupId = activeDocumentId;
+      ready = true;
     } finally {
       switchingGroup = false;
     }
   }
 
+  function openNewGroup() {
+    newGroupName = "";
+    newOwnerName = "";
+    newGroupCurrency = "USD";
+    statusMessage = "";
+    createGroupDialog.showModal();
+  }
+
   async function createGroup() {
     switchingGroup = true;
     try {
-      await groupController.createGroup();
+      await groupController.createGroup({ name: newGroupName, currency: newGroupCurrency, ownerName: newOwnerName });
+      createGroupDialog.close();
+      ready = false;
+      newGroupName = "";
+      newOwnerName = "";
+      newGroupCurrency = "USD";
     } catch (cause) {
       statusMessage = cause.message;
     } finally {
@@ -103,9 +124,9 @@
     }
   }
 
-  function addPerson(name) {
+  async function addPerson(name) {
     try {
-      const person = groupController.addPerson(name);
+      const person = await groupController.addPerson(name);
       statusMessage = `${person.name} added.`;
       return true;
     } catch (cause) {
@@ -114,17 +135,22 @@
     }
   }
 
-  function addExpense(input) {
-    groupController.addExpense(input);
-    statusMessage = "Expense saved locally.";
-    expenseDialog.close();
-    return true;
+  async function addExpense(input) {
+    try {
+      await groupController.addExpense(input);
+      statusMessage = group.signedMode ? "Signed expense saved locally." : "Expense saved locally.";
+      expenseDialog.close();
+      return true;
+    } catch (cause) {
+      statusMessage = cause.message;
+      return false;
+    }
   }
 
-  function changeExpense(input) {
+  async function changeExpense(input) {
     try {
-      groupController.reviseExpense({ ...input, eventId: editingEventId });
-      statusMessage = "Expense revision saved locally. Previous entries remain in the backup.";
+      await groupController.reviseExpense({ ...input, eventId: editingEventId });
+      statusMessage = group.signedMode ? "Signed expense revision saved locally. Previous entries remain in the backup." : "Expense revision saved locally. Previous entries remain in the backup.";
       editingEventId = "";
       revisionDialog.close();
       return true;
@@ -134,10 +160,10 @@
     }
   }
 
-  function voidExpense(eventId) {
+  async function voidExpense(eventId) {
     try {
-      groupController.voidExpense({ eventId, reason: voidReason });
-      statusMessage = "Expense void saved locally. Previous entries remain in the backup.";
+      await groupController.voidExpense({ eventId, reason: voidReason });
+      statusMessage = group.signedMode ? "Signed expense void saved locally. Previous entries remain in the backup." : "Expense void saved locally. Previous entries remain in the backup.";
       voidingEventId = "";
       voidReason = "";
       return true;
@@ -147,10 +173,10 @@
     }
   }
 
-  function resolveConflict(input) {
+  async function resolveConflict(input) {
     try {
-      groupController.resolveExpenseConflict(input);
-      statusMessage = "Conflict choice saved locally. Other branches remain in backup history.";
+      await groupController.resolveExpenseConflict(input);
+      statusMessage = group.signedMode ? "Signed conflict choice saved locally. Other branches remain in backup history." : "Conflict choice saved locally. Other branches remain in backup history.";
       return true;
     } catch (cause) {
       statusMessage = cause.message;
@@ -169,10 +195,10 @@
     revisionDialog.showModal();
   }
 
-  function recordSettlement(transfer) {
+  async function recordSettlement(transfer) {
     try {
-      groupController.recordSettlement({ fromParticipantId: transfer.from, toParticipantId: transfer.to, amount: transfer.amount });
-      statusMessage = "Settlement saved locally. Prototype attribution is unsigned.";
+      await groupController.recordSettlement({ fromParticipantId: transfer.from, toParticipantId: transfer.to, amount: transfer.amount });
+      statusMessage = group.signedMode ? "Signed settlement saved locally." : "Settlement saved locally. Prototype attribution is unsigned.";
       return true;
     } catch (cause) {
       statusMessage = cause.message;
@@ -180,10 +206,10 @@
     }
   }
 
-  function reverseSettlement(eventId) {
+  async function reverseSettlement(eventId) {
     try {
-      groupController.reverseSettlement({ eventId, reason: reversalReason });
-      statusMessage = "Settlement reversal saved locally. Prototype attribution is unsigned.";
+      await groupController.reverseSettlement({ eventId, reason: reversalReason });
+      statusMessage = group.signedMode ? "Signed settlement reversal saved locally." : "Settlement reversal saved locally. Prototype attribution is unsigned.";
       reversingEventId = "";
       reversalReason = "";
       return true;
@@ -205,7 +231,10 @@
   }
 
   function exportBackup() {
-    const url = URL.createObjectURL(new Blob([JSON.stringify(group, null, 2)], { type: "application/json" }));
+    const backup = group.signedMode ? { format: "div-it-signed-group-backup-v1", groupId: group.groupId, name: group.name,
+      currency: group.currency, membershipRecords: group.membershipRecords, ledgerRecords: group.ledgerRecords,
+      legacyAttestations: group.legacyAttestations || [] } : group;
+    const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }));
     const link = Object.assign(document.createElement("a"), { href: url, download: "div-it-backup.json" });
     link.click();
     URL.revokeObjectURL(url);
@@ -234,9 +263,13 @@
             {#each localGroups as item (item.documentId)}<option value={item.documentId}>{item.name}</option>{/each}
           </select>
         </label>
-        <button type="button" class="secondary-action" aria-label="Create new" onclick={createGroup} disabled={switchingGroup}>New</button>
+        <button type="button" class="secondary-action" aria-label="Create new" onclick={openNewGroup} disabled={switchingGroup}>New</button>
       </div>
-      <p class="prototype-attribution">Local prototype only: participant attribution is a placeholder and signatures are not active.</p>
+      {#if group.signedMode}
+        <p class="prototype-attribution">Signed local group · membership and ledger changes are verified on this device.</p>
+      {:else}
+        <p class="prototype-attribution">Local prototype only: participant attribution is a placeholder and signatures are not active.</p>
+      {/if}
       <p id="notice" aria-live="polite">{statusMessage}</p>
     </header>
 
@@ -317,12 +350,12 @@
     {:else if activeView === "balances"}
       <section aria-labelledby="balances-title" class="view">
         <h2 id="balances-title">Balances</h2>
-        <LedgerSummary {transfers} {money} {personName} {balanceMap} people={group.people} recordSettlement={recordSettlement} disabled={readOnly} />
+        <LedgerSummary {transfers} {money} {personName} {balanceMap} people={group.people} recordSettlement={recordSettlement} disabled={readOnly} signedMode={group.signedMode} />
       </section>
     {:else}
       <section aria-labelledby="group-title" class="view">
         <h2 id="group-title">Group</h2>
-        <GroupSettings {group} save={saveSettings} disabled={readOnly} />
+        <GroupSettings {group} save={saveSettings} disabled={readOnly || group.signedMode} />
         <PeopleCard people={group.people} {addPerson} disabled={readOnly} />
         <section class="card" aria-label="Group backup">
           <h3>Backup</h3>
@@ -343,6 +376,20 @@
       <h2 id="expense-title">Add expense</h2>
       <form method="dialog"><button class="dialog-close" aria-label="Close">Close</button></form>
       <ExpenseForm people={group.people} {addExpense} disabled={readOnly} />
+    </dialog>
+    <dialog bind:this={createGroupDialog} aria-labelledby="new-group-title">
+      <h2 id="new-group-title">Create signed group</h2>
+      <form method="dialog"><button class="dialog-close" aria-label="Close">Close</button></form>
+      <form onsubmit={(event) => { event.preventDefault(); createGroup(); }}>
+        <label>Name for new group <input bind:value={newGroupName} required maxlength="128" disabled={switchingGroup}></label>
+        <label>Your name <input bind:value={newOwnerName} required maxlength="128" disabled={switchingGroup}></label>
+        <label>Currency
+          <select bind:value={newGroupCurrency} disabled={switchingGroup}>
+            <option>USD</option><option>INR</option><option>EUR</option><option>GBP</option>
+          </select>
+        </label>
+        <button type="submit" disabled={switchingGroup}>Create signed group</button>
+      </form>
     </dialog>
     <dialog bind:this={revisionDialog} aria-labelledby="revision-title">
       <h2 id="revision-title">Revise expense</h2>
