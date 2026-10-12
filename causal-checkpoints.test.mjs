@@ -52,7 +52,9 @@ test("signed staged checkpoints reduce an authenticated frontier without changin
   assert.equal(result.records.length, 2);
   assert.deepEqual(result.records[0].causalHeads.length, 64);
   assert.deepEqual(result.records[1].causalHeads.length, 2);
-  assert.deepEqual(result.records[1].causalHeads[0], result.records[0].id);
+  const omitted = ctx.ledger.find(({ id }) => !result.records[0].causalHeads.includes(id));
+  assert.ok(result.records[1].causalHeads.includes(result.records[0].id));
+  assert.ok(result.records[1].causalHeads.includes(omitted.id));
   assert.deepEqual(result.frontier, [result.records[1].id]);
   assert.deepEqual(result.causalContext.frontier, result.frontier);
 

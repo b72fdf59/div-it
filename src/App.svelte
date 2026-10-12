@@ -44,6 +44,15 @@
   let stagingLegacyActivation = $state(false);
   let legacyReviewRequest = 0;
   let legacyStageRequest = 0;
+  let enrollmentParticipantId = $state("");
+  let enrollmentBootstrap = $state.raw(null);
+  let enrollmentRequest = $state.raw(null);
+  let enrollmentProof = $state.raw(null);
+  let enrollmentReview = $state.raw(null);
+  let enrollmentConfirmedOutOfBand = $state(false);
+  let enrollmentBusy = $state(false);
+  let showEnrollmentTools = $state(false);
+  let enrollmentAuthority = $derived(Boolean(group.membershipProjection?.organizers?.includes(group.localParticipantId)));
   let projection = $derived(ready ? (group.signedMode ? group.authenticatedProjection : projectGroup(group))
     : { balances: {}, effective: [], pending: [], conflicting: [], quarantined: [], unsupported: [], readOnly: false });
   let conflictReviews = $derived(ready ? expenseConflictReviews(group, projection) : []);
@@ -77,6 +86,11 @@
         if (createGroupDialog?.open) createGroupDialog.close();
         if (legacyActivationDialog?.open) legacyActivationDialog.close();
         discardLegacyPlan();
+        enrollmentBootstrap = null;
+        enrollmentRequest = null;
+        enrollmentProof = null;
+        enrollmentReview = null;
+        enrollmentConfirmedOutOfBand = false;
         activeView = "activity";
         showAudit = false;
         auditFilter = null;
@@ -112,12 +126,123 @@
     }
   }
 
+
   function openNewGroup() {
     newGroupName = "";
     newOwnerName = "";
     newGroupCurrency = "USD";
     statusMessage = "";
     createGroupDialog.showModal();
+  }
+
+  function downloadEnrollmentPackage(value, filename) {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
+    const link = Object.assign(document.createElement("a"), { href: url, download: filename });
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  async function readEnrollmentFile(event) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file || file.size > 32 * 1024 * 1024) throw new Error("Choose an enrollment JSON file under 32 MiB.");
+    return JSON.parse(await file.text());
+  }
+
+  async function createEnrollmentInvite() {
+    enrollmentBusy = true;
+    statusMessage = "";
+    try {
+      const result = await groupController.createEnrollmentInvite(enrollmentParticipantId);
+      enrollmentBootstrap = result.package;
+      enrollmentRequest = null;
+      enrollmentReview = null;
+      enrollmentProof = null;
+      enrollmentConfirmedOutOfBand = false;
+      downloadEnrollmentPackage(result.package, "div-it-invite-bootstrap.json");
+      statusMessage = `Invitation exported. Expires ${new Date(result.expiresAt).toLocaleString()}.`;
+    } catch (cause) { statusMessage = cause.message; }
+    finally { enrollmentBusy = false; }
+  }
+
+  async function prepareEnrollmentRequest(event) {
+    enrollmentBusy = true;
+    statusMessage = "";
+    try {
+      const bootstrap = await readEnrollmentFile(event);
+      const result = await groupController.createEnrollmentRequest(bootstrap);
+      enrollmentBootstrap = bootstrap;
+      enrollmentRequest = result.package;
+      enrollmentProof = null;
+      enrollmentReview = null;
+      enrollmentConfirmedOutOfBand = false;
+      downloadEnrollmentPackage(result.package, "div-it-device-join-request.json");
+      statusMessage = `Device request exported. Fingerprint: ${result.fingerprint}`;
+    } catch (cause) { statusMessage = cause.message; }
+    finally { enrollmentBusy = false; }
+  }
+
+  async function reviewEnrollmentRequest(event) {
+    enrollmentBusy = true;
+    statusMessage = "";
+    try {
+      const request = await readEnrollmentFile(event);
+      const review = await groupController.reviewEnrollmentRequest(enrollmentBootstrap, request);
+      enrollmentRequest = request;
+      enrollmentReview = review;
+    } catch (cause) { statusMessage = cause.message; enrollmentReview = null; }
+    finally { enrollmentBusy = false; }
+  }
+
+  async function importOrganizerBootstrap(event) {
+    enrollmentBusy = true;
+    statusMessage = "";
+    try {
+      enrollmentBootstrap = await readEnrollmentFile(event);
+      enrollmentRequest = null;
+      enrollmentReview = null;
+      statusMessage = "Invitation package loaded for request review.";
+    } catch (cause) { statusMessage = cause.message; enrollmentBootstrap = null; }
+    finally { enrollmentBusy = false; }
+  }
+
+  async function approveEnrollmentRequest() {
+    if (!enrollmentBootstrap || !enrollmentRequest || !enrollmentReview) return;
+    enrollmentBusy = true;
+    statusMessage = "";
+    try {
+      const result = await groupController.approveEnrollmentRequest(enrollmentBootstrap, enrollmentRequest);
+      downloadEnrollmentPackage(result.package, "div-it-enrollment-proof.json");
+      statusMessage = `Approved device proof exported for ${result.participantName}.`;
+    } catch (cause) { statusMessage = cause.message; }
+    finally { enrollmentBusy = false; }
+  }
+
+  async function reviewEnrollmentProof(event) {
+    enrollmentBusy = true;
+    statusMessage = "";
+    try {
+      const proof = await readEnrollmentFile(event);
+      enrollmentReview = await groupController.reviewEnrollmentProof(proof);
+      enrollmentProof = proof;
+      enrollmentConfirmedOutOfBand = false;
+    } catch (cause) { statusMessage = cause.message; enrollmentProof = null; enrollmentReview = null; }
+    finally { enrollmentBusy = false; }
+  }
+
+  async function confirmEnrollmentProof() {
+    enrollmentBusy = true;
+    statusMessage = "";
+    try {
+      await groupController.confirmEnrollmentProof();
+      enrollmentBootstrap = null;
+      enrollmentRequest = null;
+      enrollmentProof = null;
+      enrollmentReview = null;
+      enrollmentConfirmedOutOfBand = false;
+      statusMessage = "Device enrolled. This browser now trusts the confirmed signed group.";
+    } catch (cause) { statusMessage = cause.message; }
+    finally { enrollmentBusy = false; }
   }
 
   async function createGroup() {
@@ -433,6 +558,56 @@
             <button type="button" onclick={openLegacyActivation} disabled={switchingGroup}>Review legacy activation</button>
           </section>
         {/if}
+        <section class="card" aria-label="Device enrollment">
+          <h3>Device enrollment</h3>
+          <button type="button" aria-expanded={showEnrollmentTools} onclick={() => showEnrollmentTools = !showEnrollmentTools}>
+            {showEnrollmentTools ? "Hide enrollment tools" : "Invite or enroll a device"}
+          </button>
+          {#if showEnrollmentTools}
+          <p>Enrollment uses deliberate JSON file exchange between browser profiles. It does not sync over the internet.</p>
+          {#if group.signedMode && !readOnly && enrollmentAuthority}
+            <h4>Organizer: issue an invitation</h4>
+            <label>Existing participant
+              <select bind:value={enrollmentParticipantId} disabled={enrollmentBusy}>
+                <option value="">Choose participant</option>
+                {#each group.people as person (person.id)}<option value={person.id}>{person.name}</option>{/each}
+              </select>
+            </label>
+            <button type="button" onclick={createEnrollmentInvite} disabled={enrollmentBusy || !enrollmentParticipantId}>Issue 24-hour invitation and export</button>
+            <h4>Organizer: review and approve a device request</h4>
+            <label>Invitation bootstrap package
+              <input type="file" accept="application/json,.json" onchange={importOrganizerBootstrap} disabled={enrollmentBusy} />
+            </label>
+            <label>Device request package
+              <input type="file" accept="application/json,.json" onchange={reviewEnrollmentRequest} disabled={enrollmentBusy || !enrollmentBootstrap} />
+            </label>
+            {#if enrollmentReview && enrollmentRequest?.format === "div-it-join-request-v1"}
+              <p>Participant: <strong>{enrollmentReview.participantName}</strong> ({enrollmentReview.participantId})</p>
+              <p>Device: {enrollmentReview.deviceId} · key: {enrollmentReview.keyId}</p>
+              <p>Public key fingerprint: <code>{enrollmentReview.fingerprint}</code></p>
+              <button type="button" onclick={approveEnrollmentRequest} disabled={enrollmentBusy}>Approve this exact device and export proof</button>
+            {/if}
+          {/if}
+          <h4>Target: request access</h4>
+          <label>Organizer invitation bootstrap package
+            <input type="file" accept="application/json,.json" onchange={prepareEnrollmentRequest} disabled={enrollmentBusy} />
+          </label>
+          {#if enrollmentRequest?.format === "div-it-join-request-v1"}
+            <p>Your signed request is ready for deliberate transfer to the organizer. It contains no bearer token.</p>
+            <button type="button" onclick={() => downloadEnrollmentPackage(enrollmentRequest, "div-it-device-join-request.json")} disabled={enrollmentBusy}>Export device request again</button>
+          {/if}
+          <h4>Target: verify and confirm enrollment</h4>
+          <label>Organizer's refreshed proof package
+            <input type="file" accept="application/json,.json" onchange={reviewEnrollmentProof} disabled={enrollmentBusy || !enrollmentRequest} />
+          </label>
+          {#if enrollmentProof && enrollmentReview?.groupId}
+            <p>Group: <strong>{enrollmentReview.groupName}</strong> · ID: <code>{enrollmentReview.groupId}</code></p>
+            <p>Genesis fingerprint: <code>{enrollmentReview.genesisFingerprint}</code></p>
+            <label><input type="checkbox" bind:checked={enrollmentConfirmedOutOfBand} disabled={enrollmentBusy} /> I verified the group ID and genesis fingerprint with the organizer out of band.</label>
+            <button type="button" onclick={confirmEnrollmentProof} disabled={enrollmentBusy || !enrollmentConfirmedOutOfBand}>Confirm and trust this signed group on this device</button>
+          {/if}
+          {/if}
+        </section>
         <GroupSettings {group} save={saveSettings} disabled={readOnly || group.signedMode} />
         <PeopleCard people={group.people} {addPerson} disabled={readOnly} />
         <section class="card" aria-label="Group backup">

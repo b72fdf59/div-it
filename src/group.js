@@ -1,3 +1,4 @@
+import { ImmutableString } from "@automerge/automerge";
 import { Repo } from "@automerge/automerge-repo";
 import { BroadcastChannelNetworkAdapter } from "@automerge/automerge-repo-network-broadcastchannel";
 import { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";
@@ -16,6 +17,9 @@ import { createSignedLedgerRecord } from "./signed-ledger-records.js";
 import { legacyAttestationsFromDocument } from "./legacy-opening-balances.js";
 import { legacyActivationSourceMatches, legacyActivationSourcesEqual, stageLegacyGroupActivation } from "./legacy-group-activation.js";
 import { prepareLegacyActivationReview } from "./legacy-activation-review.js";
+import { createInviteCommand, createJoinRequestCommand, approveJoinRequestCommand, createOwnerDeviceConsentCommand } from "./membership-invitations.js";
+import { createInviteBootstrapPackage, verifyInviteBootstrapPackage, createJoinRequestPackage, verifyJoinRequestPackage,
+  createApprovalBootstrapPackage, verifyApprovalBootstrapPackage } from "./enrollment-packages.js";
 
 const GROUP_ID_KEY = "div-it-group-id";
 const GROUP_REGISTRY_KEY = "div-it-groups";
@@ -55,6 +59,26 @@ function groupIdInEvents(events) {
   if (result.invalid) throw new Error("Backup contains an invalid ledger group ID.");
   if (result.ambiguous) throw new Error("Backup contains events from multiple ledger groups.");
   return result.id;
+}
+
+function proofArchiveWire(archive) {
+  const bytes = archive.bytes instanceof Uint8Array ? archive.bytes : new Uint8Array(archive.bytes || []);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return { kind: archive.kind, mediaType: archive.mediaType,
+    ...(archive.canonicalization ? { canonicalization: archive.canonicalization } : {}),
+    bytes: { encoding: "base64url-no-padding", value: btoa(binary).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_") } };
+}
+
+function enrollmentRecordStore(records) {
+  return Object.fromEntries(records.map((record) => [`${record.id}:${crypto.randomUUID()}`, new ImmutableString(JSON.stringify(record))]));
+}
+
+function enrollmentProofStore(evidence) {
+  return Object.fromEntries(evidence.map(({ record, archive }) => [
+    `${record.id}:${crypto.randomUUID()}`,
+    new ImmutableString(JSON.stringify({ record, archive: proofArchiveWire(archive) }))
+  ]));
 }
 
 export function validateBackup(group) {
@@ -304,6 +328,10 @@ export async function openGroup(onSnapshot) {
   let activeListener;
   let groupId;
   let projectionRevision = 0;
+  let enrollmentTarget;
+  let enrollmentRequestGeneration = 0;
+  let deviceIdentityPromise;
+  const localDeviceIdentity = () => deviceIdentityPromise ||= getOrCreateDeviceIdentity();
   const persistRegistry = () => localStorage.setItem(GROUP_REGISTRY_KEY, JSON.stringify(registry));
   const registryMatchesStorage = () => {
     try { return legacyActivationSourcesEqual(JSON.parse(localStorage.getItem(GROUP_REGISTRY_KEY)), registry); }
@@ -329,6 +357,17 @@ export async function openGroup(onSnapshot) {
     if (!membership.groupId) {
       return { ...snapshot, groupIdentityIssue: true, authenticatedProjection: signedBlockedProjection(), people: [], events: [] };
     }
+    let localParticipantId = null;
+    let localDevice = null;
+    try {
+      const identity = await localDeviceIdentity();
+      const enrollment = membership.devices.find((device) => device.deviceId === identity.deviceId && device.keyId === identity.keyId);
+      if (enrollment) {
+        localParticipantId = enrollment.participantId;
+        localDevice = { participantId: enrollment.participantId, deviceId: enrollment.deviceId, keyId: enrollment.keyId,
+          publicKeyFingerprint: enrollment.publicKeyFingerprint };
+      }
+    } catch { /* Local identity storage must not hide verified group history. */ }
     const eventViews = ledger.authenticatedEvents || [];
     return {
       ...snapshot,
@@ -338,6 +377,9 @@ export async function openGroup(onSnapshot) {
       groupIdentityIssue: false,
       people: membership.participants,
       events: eventViews,
+      membershipProjection: membership,
+      localParticipantId,
+      localDevice,
       authenticatedProjection: { ...ledger, readOnly: ledger.readOnly || membership.readOnly }
     };
   };
@@ -427,7 +469,7 @@ export async function openGroup(onSnapshot) {
     if (!membership.groupId || membership.readOnly || authenticated.readOnly) throw new Error("This signed group is not writable.");
     if (authenticated.groupId !== membership.groupId) throw new Error("Signed ledger group does not match trusted membership.");
     if (!authenticated.causalFrontier?.ok) throw new Error("The authenticated ledger frontier is incomplete; wait for missing records or checkpoints.");
-    const identityKeys = await getOrCreateDeviceIdentity();
+    const identityKeys = await localDeviceIdentity();
     const enrollment = membership.devices.find((device) => device.deviceId === identityKeys.deviceId && device.keyId === identityKeys.keyId);
     if (!enrollment) throw new Error("This device is not enrolled in the signed group.");
     return {
@@ -461,6 +503,27 @@ export async function openGroup(onSnapshot) {
         || !sameRecords(current.legacyAttestations, state.legacyAttestationRecords)) {
       throw new Error("The signed group changed while the command was being prepared. Review the current heads and try again.");
     }
+  }
+
+  async function saveMembershipRecord(state, record) {
+    assertPreparedWriteCurrent(state);
+    handle.change((document) => appendStoredRecord(document, "membershipRecordsById", record));
+    await repo.flush([state.documentId]);
+    assertPreparedWriteCurrent({ ...state, membershipRecords: recordsFromDocument(handle.doc(), "membershipRecordsById") });
+    return snapshotGroup(handle.doc(), state.documentId).membershipRecords;
+  }
+
+  async function saveMembershipRecords(state, records) {
+    assertPreparedWriteCurrent(state);
+    handle.change((document) => records.forEach((record) => appendStoredRecord(document, "membershipRecordsById", record)));
+    await repo.flush([state.documentId]);
+    assertPreparedWriteCurrent({ ...state, membershipRecords: recordsFromDocument(handle.doc(), "membershipRecordsById") });
+  }
+
+  function enrollmentProof(document = handle.doc(), documentId = handle.documentId, trustPin = localTrustPin(documentId)) {
+    const snapshot = snapshotGroup(document, documentId);
+    return { membershipRecords: snapshot.membershipRecords, ledgerRecords: snapshot.ledgerRecords,
+      legacyAttestations: legacyAttestationsFromDocument(document), trustPin };
   }
 
   async function createSignedRecord(state, event) {
@@ -500,6 +563,163 @@ export async function openGroup(onSnapshot) {
     },
     getActiveDocumentId() {
       return handle.documentId;
+    },
+    async canManageEnrollment() {
+      try {
+        const state = await signedWriteContext();
+        return state.membership.organizers.includes(state.identity.participantId);
+      } catch { return false; }
+    },
+    async createEnrollmentInvite(participantId) {
+      const state = await signedWriteContext();
+      const invitation = await createInviteCommand({ groupId: state.groupId, participantId,
+        membershipHeads: state.membership.heads, identity: state.identity, records: state.membershipRecords,
+        trustPin: state.trustPin, verifiedCausalContexts: state.ledger.verifiedCausalContexts || [],
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() });
+      const records = await saveMembershipRecord(state, invitation.record);
+      assertPreparedWriteCurrent({ ...state, membershipRecords: records });
+      const proof = enrollmentProof(handle.doc(), state.documentId, state.trustPin);
+      const packageValue = await createInviteBootstrapPackage({ ...proof, invite: invitation.record, token: invitation.token });
+      return { package: packageValue, expiresAt: invitation.record.payload.expiresAt };
+    },
+    async createEnrollmentRequest(input) {
+      const requestGeneration = ++enrollmentRequestGeneration;
+      const bootstrap = await verifyInviteBootstrapPackage(input);
+      if (!bootstrap.ok) throw new Error(bootstrap.reason || "Invalid invitation package.");
+      if (bootstrap.expired) throw new Error("This invitation has expired. Ask the organizer for a new invitation.");
+      const identity = await getOrCreateDeviceIdentity();
+      const requestIdentity = { ...identity, participantId: bootstrap.invite.payload.participantId };
+      const request = await createJoinRequestCommand({ invite: bootstrap.invite, token: bootstrap.package.token,
+        groupId: bootstrap.package.groupId, membershipHeads: bootstrap.membership.heads,
+        identity: requestIdentity, records: bootstrap.package.membershipRecords, trustPin: bootstrap.package.trustPin,
+        verifiedCausalContexts: bootstrap.ledger.verifiedCausalContexts || [] });
+      const requestPackage = await createJoinRequestPackage({ bootstrap, request });
+      if (requestGeneration !== enrollmentRequestGeneration) throw new Error("A newer invitation was opened. Start the request again.");
+      enrollmentTarget = { bootstrap, request, identity: requestIdentity, requestPackage, proof: null };
+      return { package: requestPackage, participantId: requestIdentity.participantId,
+        deviceId: requestIdentity.deviceId, keyId: requestIdentity.keyId,
+        fingerprint: request.payload.publicKeyFingerprint };
+    },
+    async reviewEnrollmentRequest(bootstrapInput, requestInput) {
+      const bootstrap = await verifyInviteBootstrapPackage(bootstrapInput);
+      if (!bootstrap.ok) throw new Error(bootstrap.reason || "Invalid invitation package.");
+      if (bootstrap.expired) throw new Error("This invitation has expired. No approval was created.");
+      const checked = await verifyJoinRequestPackage(requestInput, { bootstrap });
+      if (!checked.ok) throw new Error(checked.reason || "Invalid device request.");
+      const participant = bootstrap.membership.participants.find(({ id }) => id === checked.request.payload.participantId);
+      return { bootstrap, request: checked.request, participantName: participant?.name || "Unknown participant",
+        participantId: checked.request.payload.participantId, deviceId: checked.request.author.deviceId,
+        keyId: checked.request.author.keyId, fingerprint: checked.request.payload.publicKeyFingerprint };
+    },
+    async approveEnrollmentRequest(bootstrapInput, requestInput) {
+      const reviewed = await this.reviewEnrollmentRequest(bootstrapInput, requestInput);
+      const state = await signedWriteContext();
+      const invite = reviewed.bootstrap.invite;
+      if (state.groupId !== reviewed.bootstrap.package.groupId
+          || !state.membershipRecords.some((record) => record.id === invite.id)) {
+        throw new Error("This invitation is not part of the current group proof. Review the current group and try again.");
+      }
+      if (reviewed.participantId === state.membership.ownerParticipantId
+          && state.identity.participantId !== state.membership.ownerParticipantId) {
+        throw new Error("An active owner device must approve its own new device. No approval was recorded.");
+      }
+      const approval = await approveJoinRequestCommand({ invite, request: reviewed.request,
+        token: reviewed.bootstrap.package.token, genesis: reviewed.bootstrap.membership.genesis,
+        trustPin: state.trustPin, membershipHeads: state.membership.heads, identity: state.identity,
+        records: state.membershipRecords, verifiedCausalContexts: state.ledger.verifiedCausalContexts || [] });
+      await saveMembershipRecords(state, [reviewed.request, approval]);
+      const afterApproval = await signedWriteContext();
+      if (afterApproval.membership.ownerParticipantId === reviewed.participantId) {
+        const consent = await createOwnerDeviceConsentCommand({ approval, groupId: afterApproval.groupId,
+          membershipHeads: afterApproval.membership.heads, identity: afterApproval.identity,
+          records: afterApproval.membershipRecords, trustPin: afterApproval.trustPin,
+          verifiedCausalContexts: afterApproval.ledger.verifiedCausalContexts || [] });
+        await saveMembershipRecord(afterApproval, consent);
+      }
+      const refreshed = enrollmentProof();
+      const proofPackage = await createApprovalBootstrapPackage(refreshed);
+      return { package: proofPackage, participantName: reviewed.participantName,
+        fingerprint: reviewed.fingerprint };
+    },
+    async reviewEnrollmentProof(input) {
+      if (!enrollmentTarget) throw new Error("Import the invitation and create this device request first.");
+      const target = enrollmentTarget;
+      const result = await verifyApprovalBootstrapPackage(input, { bootstrap: enrollmentTarget.bootstrap,
+        request: target.request, identity: target.identity });
+      if (enrollmentTarget !== target) throw new Error("The enrollment request changed during proof review. Start again.");
+      if (!result.ok) throw new Error(result.reason || "The organizer proof does not enroll this device.");
+      target.proof = result;
+      return { groupName: result.groupName, groupId: result.package.groupId,
+        genesisFingerprint: result.trustPin.publicKeyFingerprint, participantId: result.enrolledDevice.participantId,
+        deviceId: result.enrolledDevice.deviceId };
+    },
+    async confirmEnrollmentProof() {
+      if (!enrollmentTarget?.proof) throw new Error("Review the organizer proof before confirming trust.");
+      const target = enrollmentTarget;
+      const targetProof = target.proof;
+      const sourceGeneration = generation;
+      const sourceDocumentId = handle.documentId;
+      const assertEnrollmentCurrent = () => {
+        if (enrollmentTarget !== target || target.proof !== targetProof || generation !== sourceGeneration || !handle
+            || handle.documentId !== sourceDocumentId || registry.activeDocumentId !== sourceDocumentId
+            || !registryMatchesStorage()) throw new Error("The active group or enrollment review changed. Review the proof again.");
+      };
+      const verified = await verifyApprovalBootstrapPackage(targetProof.package, { bootstrap: target.bootstrap,
+        request: target.request, identity: target.identity });
+      if (!verified.ok) throw new Error(verified.reason || "The organizer proof changed. Review it again.");
+      if (enrollmentTarget !== target || target.proof !== targetProof) throw new Error("The enrollment proof changed. Review it again.");
+      assertEnrollmentCurrent();
+      if (import.meta.env.DEV && new URLSearchParams(location.search).has("testReplica")) {
+        throw new Error("Enrollment requires durable local storage; it is unavailable in replica-test mode.");
+      }
+      const newHandle = repo.create({ name: verified.groupName, currency: verified.currency,
+        groupId: verified.package.groupId, signedGroupVersion: 1, people: [], events: [], eventsById: {},
+        membershipRecordsById: enrollmentRecordStore(verified.package.membershipRecords),
+        ledgerRecordsById: enrollmentRecordStore(verified.package.ledgerRecords),
+        legacyAttestationsById: enrollmentProofStore(verified.legacyAttestations) });
+      const newDocumentId = newHandle.documentId;
+      try {
+        await repo.flush([newDocumentId]);
+        const verifierRepo = new Repo({ storage: new IndexedDBStorageAdapter(), network: [] });
+        let persisted;
+        try { persisted = (await verifierRepo.find(newDocumentId)).doc(); }
+        finally { await verifierRepo.shutdown(); }
+        const proof = enrollmentProof(persisted, newDocumentId, verified.trustPin);
+        const persistedCheck = await verifyApprovalBootstrapPackage(await createApprovalBootstrapPackage(proof), {
+          bootstrap: target.bootstrap, request: target.request, identity: target.identity });
+        if (!persistedCheck.ok || persistedCheck.package.groupId !== verified.package.groupId
+            || persisted.signedGroupVersion !== 1 || persisted.groupId !== verified.package.groupId
+            || persisted.name !== verified.groupName || persisted.currency !== verified.currency
+            || !sameRecords(proof.membershipRecords, verified.package.membershipRecords)
+            || !sameRecords(proof.ledgerRecords, verified.package.ledgerRecords)
+            || !sameProofs(proof.legacyAttestations, verified.legacyAttestations)) {
+          throw new Error("Saved enrollment proof did not pass storage-backed verification.");
+        }
+        assertEnrollmentCurrent();
+        const priorRegistryRaw = localStorage.getItem(GROUP_REGISTRY_KEY);
+        const priorPinsRaw = localStorage.getItem(TRUST_PINS_KEY);
+        const priorRegistry = structuredClone(registry);
+        const nextRegistry = structuredClone(registry);
+        nextRegistry.groups.push({ documentId: newDocumentId, name: verified.groupName });
+        nextRegistry.activeDocumentId = newDocumentId;
+        try {
+          assertEnrollmentCurrent();
+          storeLocalTrustPin(newDocumentId, verified.trustPin);
+          localStorage.setItem(GROUP_REGISTRY_KEY, JSON.stringify(nextRegistry));
+          registry = nextRegistry;
+          const token = ++generation;
+          if (!await activate(newHandle, token, false)) throw new Error("Could not activate the verified group.");
+        } catch (cause) {
+          registry = priorRegistry;
+          try { if (priorRegistryRaw === null) localStorage.removeItem(GROUP_REGISTRY_KEY); else localStorage.setItem(GROUP_REGISTRY_KEY, priorRegistryRaw); } catch {}
+          try { if (priorPinsRaw === null) localStorage.removeItem(TRUST_PINS_KEY); else localStorage.setItem(TRUST_PINS_KEY, priorPinsRaw); } catch {}
+          const token = ++generation;
+          await activate(await repo.find(priorRegistry.activeDocumentId), token, false);
+          throw cause;
+        }
+        enrollmentTarget = null;
+        return newDocumentId;
+      } catch (cause) { throw cause; }
     },
     async reviewLegacyActivation() {
       const sourceGeneration = generation;
@@ -618,6 +838,8 @@ export async function openGroup(onSnapshot) {
     async switchGroup(documentId) {
       if (!registry.groups.some((item) => item.documentId === documentId)) throw new Error("Choose a group in this browser.");
       if (registry.activeDocumentId === documentId && activeListener) return true;
+      enrollmentTarget = null;
+      enrollmentRequestGeneration += 1;
       const previousHandle = handle;
       const previousId = registry.activeDocumentId;
       const token = ++generation;

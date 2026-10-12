@@ -697,7 +697,7 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
 
 ### DIV-121 — App invitations and device enrollment handoff
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-105, DIV-116, DIV-120
 - Deliverable: Wire existing signed invitation/enrollment APIs into an explicit file handoff between independent browser profiles/devices, with final out-of-band trust confirmation. This is the enrollment substrate for subsequent QR joining and encrypted relay integration; it does not complete EPIC-100 alone.
 - Acceptance:
@@ -708,3 +708,17 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
   - Package formats are versioned and bounded; reject malformed, forged, cross-group, replayed or mismatched packages before mutation. Expiry gates user actions without introducing timestamp-based projection authority. Preserve all signed records and existing legacy proofs; no private signing keys are exported.
   - Real UI tests in two isolated browser contexts prove distinct keys and complete enrollment, denial before approval/confirmation, safe retry, token absence from persistent shared data and unchanged registry/pins after rejection. Full unit/build/browser regressions pass; root review before DONE.
   - Document deliberate file exchange and absence of live internet synchronization. QR joining remains a required successor, not deferred beyond first release. Real-device transfer and pilot evidence remain manual release gates.
+
+- Root acceptance (2026-10-12): reviewed candidate trust, complete signed proof and archive preservation, exact local-key/approval binding, owner consent, expiry gates, duplicate normalization and durable activation rollback. Full Firefox 54/54, unit 208/208, production build and diff checks pass. Isolated browser profiles prove reload/key continuity, an enrolled signed expense, member authority denial and token absence; storage failure/retry and stale group switching pass.
+
+### DIV-122 — Participant names and organizer role management in the app
+
+- Status: READY
+- Depends on: DIV-121, DIV-115
+- Deliverable: Expose existing verified participant-rename and organizer grant/revoke commands in the signed group UI, with visible current owner and organizer roles. Ownership transfer, removals, QR joining and encryption-key distribution remain required successors before EPIC-100 is complete.
+- Acceptance:
+  - Display roles from actual verified membership, identify the local participant/device, and distinguish roster participants from enrolled devices. Shared names/metadata never establish authority.
+  - Active organizers can rename an existing active participant through the signed roster API; only the active owner can grant or revoke organizer authority. The current owner cannot be revoked. Ordinary members and unknown/removed devices cannot bypass restrictions through controller calls.
+  - Show the exact selected participant and intended role change before explicit submission. Use concrete current membership and verified causal contexts, preserve every immutable variant, and recheck group/generation/pin/records immediately before mutation.
+  - Async forms await successful persistence, keep errors visible, and reject stale group switches or changed membership. Concurrent name/role conflicts remain visible under existing projector policy; never silently choose a branch.
+  - Browser tests exercise owner grant/revoke, organizer rename, ordinary-member denial, stale-state rejection and persistence/reload. Existing enrollment, migration and financial flows remain verified. Full unit/build/browser checks and root review pass before DONE.
