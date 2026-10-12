@@ -331,6 +331,31 @@
     }
   }
 
+  async function renameParticipant(participantId, name, expected) {
+    try {
+      await groupController.renameParticipant(participantId, name, expected);
+      statusMessage = `Participant ${participantId} renamed to ${name}.`;
+      return true;
+    } catch (cause) {
+      statusMessage = cause.message;
+      throw cause;
+    }
+  }
+
+  async function changeOrganizerRole(participantId, grant, expected) {
+    try {
+      await (grant ? groupController.grantOrganizer(participantId, expected) : groupController.revokeOrganizer(participantId, expected));
+      statusMessage = grant ? `Organizer authority granted to ${participantId}.` : `Organizer authority revoked from ${participantId}.`;
+      return true;
+    } catch (cause) {
+      statusMessage = cause.message;
+      throw cause;
+    }
+  }
+
+  const grantOrganizer = (participantId, expected) => changeOrganizerRole(participantId, true, expected);
+  const revokeOrganizer = (participantId, expected) => changeOrganizerRole(participantId, false, expected);
+
   async function addExpense(input) {
     try {
       await groupController.addExpense(input);
@@ -609,7 +634,10 @@
           {/if}
         </section>
         <GroupSettings {group} save={saveSettings} disabled={readOnly || group.signedMode} />
-        <PeopleCard people={group.people} {addPerson} disabled={readOnly} />
+        <PeopleCard people={group.people} {addPerson} disabled={readOnly} signedMode={group.signedMode}
+          membership={group.membershipProjection} localDevice={group.localDevice} localParticipantId={group.localParticipantId}
+          activeDocumentId={activeDocumentId} trustPin={group.localTrustPin}
+          {renameParticipant} {grantOrganizer} {revokeOrganizer} />
         <section class="card" aria-label="Group backup">
           <h3>Backup</h3>
           <button type="button" onclick={exportBackup}>Export backup</button>

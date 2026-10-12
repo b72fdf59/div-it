@@ -10,7 +10,8 @@ import { appendStoredEvent, eventsFromDocument, migrateEventStore, needsEventSto
 import { appendStoredRecord, recordsFromDocument } from "./event-store.js";
 import { createGroupGenesis } from "./group-genesis.js";
 import { getOrCreateDeviceIdentity } from "./device-identity-store.js";
-import { createParticipantAddCommand } from "./membership-roster-commands.js";
+import { createParticipantAddCommand, createParticipantRenameCommand, createOrganizerGrantCommand,
+  createOrganizerRevokeCommand } from "./membership-roster-commands.js";
 import { projectSignedMembership } from "./signed-membership-projector.js";
 import { projectAuthenticatedLedger } from "./authenticated-ledger.js";
 import { createSignedLedgerRecord } from "./signed-ledger-records.js";
@@ -237,6 +238,12 @@ function sameRecords(left, right) {
   return JSON.stringify(sortedRecords(left)) === JSON.stringify(sortedRecords(right));
 }
 
+function sameHeads(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+  const sorted = [...right].sort();
+  return [...left].sort().every((head, index) => head === sorted[index]);
+}
+
 function signedBlockedProjection() {
   return { balances: {}, effective: [], pending: [], conflicting: [], quarantined: [], unsupported: [], ignored: [], duplicates: [], readOnly: true };
 }
@@ -375,6 +382,7 @@ export async function openGroup(onSnapshot) {
       currency: membership.currency,
       groupId: membership.groupId,
       groupIdentityIssue: false,
+      localTrustPin: { genesisId: trustPin.genesisId, publicKeyFingerprint: trustPin.publicKeyFingerprint },
       people: membership.participants,
       events: eventViews,
       membershipProjection: membership,
@@ -557,6 +565,49 @@ export async function openGroup(onSnapshot) {
       || { id: record.payload.participantId, name: record.payload.name };
   }
 
+  async function commitRosterTransition(recordType, participantId, name, expected) {
+    const state = await signedWriteContext();
+    if (expected && (expected.documentId !== state.documentId || expected.groupId !== state.groupId
+        || expected.trustPin?.genesisId !== state.trustPin.genesisId
+        || expected.trustPin?.publicKeyFingerprint !== state.trustPin.publicKeyFingerprint
+        || !Array.isArray(expected.membershipHeads)
+        || !sameHeads(expected.membershipHeads, [...state.membership.heads].sort()))) {
+      throw new Error("Membership changed since this review. Review the participant and intended change again.");
+    }
+    const record = await (recordType === "participant-renamed" ? createParticipantRenameCommand
+      : recordType === "organizer-granted" ? createOrganizerGrantCommand : createOrganizerRevokeCommand)({
+      groupId: state.groupId, participantId, name, membershipHeads: state.membership.heads,
+      identity: state.identity, records: state.membershipRecords, trustPin: state.trustPin,
+      verifiedCausalContexts: state.ledger.verifiedCausalContexts || []
+    });
+    assertPreparedWriteCurrent(state);
+    handle.change((document) => appendStoredRecord(document, "membershipRecordsById", record));
+    await repo.flush([state.documentId]);
+    if (state.token !== generation || !handle || handle.documentId !== state.documentId) {
+      throw new Error("The active group changed while the roster update was being saved. Review the current group and try again.");
+    }
+    const pin = localTrustPin(state.documentId);
+    if (!pin || pin.genesisId !== state.trustPin.genesisId
+        || pin.publicKeyFingerprint !== state.trustPin.publicKeyFingerprint) {
+      throw new Error("The local trust pin changed while the roster update was being saved. Review the current group and try again.");
+    }
+    const saved = snapshotGroup(handle.doc(), state.documentId).membershipRecords;
+    if (!saved.some((item) => item.id === record.id && legacyActivationSourcesEqual(item, record))) {
+      throw new Error("The roster update did not persist. Review the current group and try again.");
+    }
+    const verified = await projectSignedMembership(saved, { trustPin: state.trustPin,
+      verifiedCausalContexts: state.ledger.verifiedCausalContexts || [] });
+    assertPreparedWriteCurrent({ ...state, membershipRecords: saved });
+    if (verified.readOnly) throw new Error("The saved roster update is not verified and remains visible for review.");
+    const conflict = verified.conflicts?.some((item) => item.participantId === participantId
+      && item.type === (recordType === "participant-renamed" ? "participant-name-conflict" : "organizer-role-conflict"));
+    const participant = verified.participants.find(({ id }) => id === participantId);
+    const effective = recordType === "participant-renamed" ? participant?.name === name
+      : verified.organizers.includes(participantId) === (recordType === "organizer-granted");
+    if (conflict || !effective) throw new Error("A concurrent roster update conflicts with this change. The signed records are preserved; review the unresolved roster conflict before trying again.");
+    return { record, membership: verified };
+  }
+
   controller = {
     getGroups() {
       return registry.groups.map((item) => ({ ...item }));
@@ -581,6 +632,15 @@ export async function openGroup(onSnapshot) {
       const proof = enrollmentProof(handle.doc(), state.documentId, state.trustPin);
       const packageValue = await createInviteBootstrapPackage({ ...proof, invite: invitation.record, token: invitation.token });
       return { package: packageValue, expiresAt: invitation.record.payload.expiresAt };
+    },
+    async renameParticipant(participantId, name, expected) {
+      return commitRosterTransition("participant-renamed", participantId, validatePersonName(name), expected);
+    },
+    async grantOrganizer(participantId, expected) {
+      return commitRosterTransition("organizer-granted", participantId, undefined, expected);
+    },
+    async revokeOrganizer(participantId, expected) {
+      return commitRosterTransition("organizer-revoked", participantId, undefined, expected);
     },
     async createEnrollmentRequest(input) {
       const requestGeneration = ++enrollmentRequestGeneration;

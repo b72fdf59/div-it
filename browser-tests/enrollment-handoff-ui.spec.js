@@ -100,12 +100,19 @@ test("two isolated browser profiles complete explicit invite, approval, and trus
       const canManage = await controller.canManageEnrollment();
       let inviteError = "";
       let approvalError = "";
+      let renameError = "";
+      let grantError = "";
+      let revokeError = "";
       try { await controller.createEnrollmentInvite(args.participantId); } catch (cause) { inviteError = cause.message; }
       try { await controller.approveEnrollmentRequest(args.bootstrap, args.request); } catch (cause) { approvalError = cause.message; }
-      return { canManage, inviteError, approvalError };
+      try { await controller.renameParticipant(args.participantId, "Unauthorized rename"); } catch (cause) { renameError = cause.message; }
+      try { await controller.grantOrganizer(args.participantId); } catch (cause) { grantError = cause.message; }
+      try { await controller.revokeOrganizer(args.participantId); } catch (cause) { revokeError = cause.message; }
+      return { canManage, inviteError, approvalError, renameError, grantError, revokeError };
     }, { participantId: invite.membershipRecords.find((record) => record.recordType === "invite-issued").payload.participantId,
       bootstrap: invite, request });
-    assert.deepEqual(memberAuthority, { canManage: false, inviteError: "not-organizer", approvalError: "not-organizer" });
+    assert.deepEqual(memberAuthority, { canManage: false, inviteError: "not-organizer", approvalError: "not-organizer",
+      renameError: "not-organizer", grantError: "not-owner", revokeError: "not-owner" });
 
     await target.getByRole("button", { name: "Group", exact: true }).click();
     const backup = await downloadedJson(target, () => target.getByRole("button", { name: "Export backup" }).click());

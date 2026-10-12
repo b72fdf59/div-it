@@ -713,7 +713,7 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
 
 ### DIV-122 — Participant names and organizer role management in the app
 
-- Status: READY
+- Status: DONE
 - Depends on: DIV-121, DIV-115
 - Deliverable: Expose existing verified participant-rename and organizer grant/revoke commands in the signed group UI, with visible current owner and organizer roles. Ownership transfer, removals, QR joining and encryption-key distribution remain required successors before EPIC-100 is complete.
 - Acceptance:
@@ -722,3 +722,19 @@ Do not start these before the pilot gate. Re-grill and split each area when prom
   - Show the exact selected participant and intended role change before explicit submission. Use concrete current membership and verified causal contexts, preserve every immutable variant, and recheck group/generation/pin/records immediately before mutation.
   - Async forms await successful persistence, keep errors visible, and reject stale group switches or changed membership. Concurrent name/role conflicts remain visible under existing projector policy; never silently choose a branch.
   - Browser tests exercise owner grant/revoke, organizer rename, ordinary-member denial, stale-state rejection and persistence/reload. Existing enrollment, migration and financial flows remain verified. Full unit/build/browser checks and root review pass before DONE.
+
+- Root acceptance (2026-10-12): reviewed explicit participant/change confirmations, verified roles/device identity, current document/pin/head guards and post-persistence variant checks. Full Firefox 57/57, root unit 208/208, root production build and diff checks pass. Browser coverage includes owner grants/revokes, active enrolled organizer rename/reload, member denial, stale state rejection and concurrent signed name conflicts without branch selection.
+
+### DIV-123 — Trusted group updates and ownership transfer in the app
+
+- Status: READY
+- Depends on: DIV-122, DIV-106, DIV-121
+- Deliverable: Add bounded signed full-history file exchange into an already trusted local group, then expose owner proposal, exact recipient acceptance and retained-owner resolution of concurrent accepted transfers. This is deliberate file transport; QR and relay remain successors.
+- Acceptance:
+  - Update packages contain complete membership, financial and legacy archive evidence under DIV-121 resource bounds, with no invitation token or private signing key. Imports require the destination's existing local genesis pin/group identity; shared package pins never create or replace trust.
+  - Snapshot destination and incoming data, union every immutable variant idempotently, derive concrete causal contexts from the merged authenticated ledger, and verify membership/financial/proof bindings before mutation. Reject foreign identity, invalid signatures/ancestry, unsupported authority, missing required evidence or colliding IDs without changing destination stores. Preserve both replicas' valid financial records and original archive bytes; ownership changes have no independent money effect.
+  - Persist validated updates into the same destination document, retaining its document ID, local pin and registry selection. Recheck active group/generation/pin/source variants immediately before append and after async verification. Never replace a local history with the incoming copy or re-enroll an already enrolled device.
+  - Only the active owner proposes transfer to an existing active enrolled participant/device. Proposal alone leaves ownership unchanged. Only the exact named device accepts the verified proposal; show current owner, recipient/device/fingerprint and intended action for explicit confirmation.
+  - Concurrent accepted transfers keep the common prior owner until that owner explicitly resolves the complete accepted branch set. Conflicting resolutions remain unresolved; no timestamp, record ID or arrival tie-break. Losing branches remain in audit history and descendant authority follows the existing DIV-106 projector policy.
+  - Two isolated browser profiles exercise proposal/update/acceptance/update and show ownership convergence, unchanged local document IDs/pins and retained history. Ordinary members and wrong recipient devices are denied; malformed/foreign/missing-evidence imports leave stores unchanged. Cover retained-owner conflict resolution, stale review/async switching and reload persistence. Full unit/build/browser checks and root review pass before DONE.
+  - Show that the former owner retains organizer status until revoked by the new owner. Transfer does not erase downloaded history or claim encryption-key rotation; key distribution and removals remain separate required successors.

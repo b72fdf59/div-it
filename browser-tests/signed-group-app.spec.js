@@ -110,8 +110,33 @@ test("creates, signs, backs up, and reloads a real signed group", async ({ page 
   await reversalForm.getByRole("button", { name: "Confirm reversal" }).click();
   await expect(page.getByRole("heading", { name: "Recent activity" }).locator("..")).toContainText("Payment entered twice");
 
-  const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "Group", exact: true }).click();
+  const roster = page.getByRole("region", { name: "People and roles" });
+  await expect(roster.getByText("Owner", { exact: true })).toBeVisible();
+  await expect(roster.getByText(/This device:/)).toBeVisible();
+  const aliceId = await roster.getByLabel("Participant for role change").locator("option").filter({ hasText: "Alice ·" }).getAttribute("value");
+  const ownerSelect = roster.getByLabel("Participant for role change");
+  const ownerId = await ownerSelect.locator("option").filter({ hasText: "Mina ·" }).getAttribute("value");
+  await ownerSelect.selectOption(ownerId);
+  await expect(roster.getByRole("button", { name: "Review organizer revocation" })).toBeDisabled();
+  await ownerSelect.selectOption(aliceId);
+  await roster.getByRole("button", { name: "Review organizer grant" }).click();
+  await expect(roster.getByText(new RegExp(`Confirm: grant organizer authority to Alice.*${aliceId}`))).toBeVisible();
+  await roster.getByRole("button", { name: "Confirm grant" }).click();
+  await expect(roster.getByText("Organizer", { exact: true })).toBeVisible();
+  await roster.getByRole("button", { name: "Review organizer revocation" }).click();
+  await expect(roster.getByText(new RegExp(`Confirm: revoke organizer authority from Alice.*${aliceId}`))).toBeVisible();
+  await roster.getByRole("button", { name: "Confirm revocation" }).click();
+  await expect(roster.getByText("Member", { exact: true })).toBeVisible();
+  const renameSelect = roster.getByLabel("Participant to rename");
+  await renameSelect.selectOption(aliceId);
+  await roster.getByLabel("New participant name").fill("Alice Renamed");
+  await roster.getByRole("button", { name: "Review rename" }).click();
+  await expect(roster).toContainText(`Confirm rename: Alice (${aliceId}) to Alice Renamed`);
+  await roster.getByRole("button", { name: "Confirm this rename" }).click();
+  await expect(roster.locator("ul.people").getByText("Alice Renamed", { exact: true })).toBeVisible();
+
+  const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "Export backup" }).click();
   const backup = JSON.parse(await fs.readFile(await (await download).path(), "utf8"));
   assert.equal(backup.format, "div-it-signed-group-backup-v1");
@@ -133,6 +158,107 @@ test("creates, signs, backs up, and reloads a real signed group", async ({ page 
   await page.getByRole("button", { name: "Balances" }).click();
   await expect(page.getByRole("heading", { name: "Everyone" }).locator("..")).toContainText("Alice");
   await expect(page.getByRole("heading", { name: "Everyone" }).locator("..")).toContainText("€10.00");
+});
+
+test("a roster review is invalidated when another tab changes membership before signing", async ({ page }) => {
+  await page.goto("/");
+  await createSignedGroup(page, { name: "Roster race", owner: "Owner" });
+  await page.getByRole("button", { name: "Group", exact: true }).click();
+  const roster = page.getByRole("region", { name: "People and roles" });
+  await roster.getByLabel("Person name").fill("Alice");
+  await roster.getByRole("button", { name: "Add" }).click();
+  await expect(roster.getByText("Alice", { exact: true })).toBeVisible();
+
+  const aliceId = await roster.getByLabel("Participant to rename").locator("option").filter({ hasText: "Alice ·" }).getAttribute("value");
+  await roster.getByLabel("Participant to rename").selectOption(aliceId);
+  await roster.getByLabel("New participant name").fill("Alice Updated");
+  await roster.getByRole("button", { name: "Review rename" }).click();
+  await roster.getByRole("button", { name: "Confirm this rename" }).click();
+  await expect(roster.locator("ul.people").getByText("Alice Updated", { exact: true })).toBeVisible();
+
+  await page.evaluate(() => {
+    const nativeSign = SubtleCrypto.prototype.sign;
+    window.__rosterSignStarted = false;
+    window.__releaseRosterSign = null;
+    let gated = false;
+    SubtleCrypto.prototype.sign = async function (...args) {
+      if (!gated) {
+        gated = true;
+        window.__rosterSignStarted = true;
+        await new Promise((resolve) => { window.__releaseRosterSign = resolve; });
+      }
+      return nativeSign.apply(this, args);
+    };
+    window.__restoreRosterSign = () => { SubtleCrypto.prototype.sign = nativeSign; };
+  });
+  await roster.getByLabel("New participant name").fill("Stale rename");
+  await roster.getByRole("button", { name: "Review rename" }).click();
+  const confirmation = roster.getByRole("button", { name: "Confirm this rename" });
+  await confirmation.click();
+  await expect.poll(() => page.evaluate(() => window.__rosterSignStarted)).toBe(true);
+
+  const otherTab = await page.context().newPage();
+  try {
+    await otherTab.goto("/");
+    await expect(otherTab.getByRole("heading", { name: "Roster race" })).toBeVisible();
+    const concurrent = await otherTab.evaluate(async () => {
+      const { openGroup } = await import("/src/group.js");
+      const controller = await openGroup(() => {});
+      return controller.addPerson("Concurrent member");
+    });
+    assert.equal(concurrent.name, "Concurrent member");
+    await expect.poll(() => roster.locator("ul.people").getByText("Concurrent member", { exact: true }).count()).toBe(1);
+    await page.evaluate(() => { window.__releaseRosterSign(); window.__restoreRosterSign(); });
+    await expect(roster.getByRole("alert")).toContainText("Membership changed since this review");
+    await expect(roster.locator("ul.people").getByText("Alice Updated", { exact: true })).toBeVisible();
+    await expect(roster.locator("ul.people").getByText("Concurrent member", { exact: true })).toBeVisible();
+  } finally {
+    await page.evaluate(() => { window.__releaseRosterSign?.(); window.__restoreRosterSign?.(); });
+    await otherTab.close();
+  }
+});
+
+test("concurrent signed participant name branches remain visible and unchosen", async ({ page }) => {
+  await page.goto("/?testSync=1");
+  await createSignedGroup(page, { name: "Name conflict", owner: "Owner" });
+  await page.getByRole("button", { name: "Group", exact: true }).click();
+  const roster = page.getByRole("region", { name: "People and roles" });
+  await roster.getByLabel("Person name").fill("Alice");
+  await roster.getByRole("button", { name: "Add" }).click();
+  await expect(roster.locator("ul.people")).toContainText("Alice");
+
+  const binary = await page.evaluate(() => window.__divItTestSync.exportBinary());
+  const document = Automerge.load(Uint8Array.from(binary));
+  const records = recordsFromDocument(document, "membershipRecordsById");
+  const trustPin = await page.evaluate(() => {
+    const documentId = JSON.parse(localStorage.getItem("div-it-groups")).activeDocumentId;
+    return JSON.parse(localStorage.getItem("div-it-signed-group-trust-pins"))[documentId];
+  });
+  const fixture = await page.evaluate(async ({ records, trustPin }) => {
+    const { getOrCreateDeviceIdentity } = await import("/src/device-identity-store.js");
+    const { createParticipantRenameCommand } = await import("/src/membership-roster-commands.js");
+    const { projectSignedMembership } = await import("/src/signed-membership-projector.js");
+    const membership = await projectSignedMembership(records, { trustPin });
+    const participantId = membership.participants.find(({ name }) => name === "Alice").id;
+    const identity = { ...await getOrCreateDeviceIdentity(), participantId: membership.ownerParticipantId };
+    const command = (name) => createParticipantRenameCommand({ groupId: membership.groupId, participantId, name,
+      membershipHeads: membership.heads, identity, records, trustPin });
+    const branches = await Promise.all([command("Alice branch A"), command("Alice branch B")]);
+    const projected = await projectSignedMembership([...records, ...branches], { trustPin });
+    return { participantId, branchIds: branches.map(({ id }) => id), branches, diagnostics: projected.diagnostics };
+  }, { records, trustPin });
+  assert.ok(fixture.diagnostics.some((diagnostic) => diagnostic.reason === "participant-name-conflict"));
+  const changed = Automerge.change(document, (draft) => fixture.branches.forEach((record) => appendStoredRecord(draft, "membershipRecordsById", record)));
+  await page.evaluate((bytes) => sessionStorage.setItem("div-it-test-replica", JSON.stringify(bytes)), Array.from(Automerge.save(changed)));
+  await page.goto("/?testSync=1&testReplica=1");
+  await page.getByRole("button", { name: "Group", exact: true }).click();
+  const conflictedRoster = page.getByRole("region", { name: "People and roles" });
+  const diagnostics = conflictedRoster.getByRole("alert", { name: "Unresolved membership conflicts" });
+  await expect(diagnostics).toContainText("Competing participant names");
+  await expect(diagnostics).toContainText(fixture.participantId);
+  await expect(diagnostics).toContainText("No branch was selected");
+  await expect(diagnostics).toContainText(fixture.branchIds[0]);
+  await expect(diagnostics).toContainText(fixture.branchIds[1]);
 });
 
 test("signed restore is rejected without mutating a legacy group, and missing local trust never falls back", async ({ page }) => {
